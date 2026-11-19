@@ -203,6 +203,94 @@ def _tail(text: str, limit: int | None) -> tuple[str, bool]:
     return text[-limit:], True
 
 
+def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
+    """Detect if a Windows .cmd/.bat shim wraps a direct executable, Node.js script, or Python script.
+
+    Returning a list of [executable, ...args] allows running via Win32 CreateProcessW directly,
+    bypassing cmd.exe shell interpretation, %VARIABLE% expansion, and argument truncation on newlines.
+    """
+    try:
+        if not os.path.isfile(cmd_path):
+            return None
+    except (OSError, ValueError):
+        return None
+
+    cmd_dir = os.path.dirname(os.path.abspath(cmd_path))
+    stem = os.path.splitext(os.path.basename(cmd_path))[0]
+
+    # 1. Sibling .exe (e.g., codex.exe in the same folder as codex.cmd)
+    sibling_exe = os.path.join(cmd_dir, stem + ".exe")
+    if os.path.isfile(sibling_exe):
+        return [sibling_exe]
+
+    # 2. Sibling script without extension (common in test harnesses and git shims)
+    sibling_script = os.path.join(cmd_dir, stem)
+    if os.path.isfile(sibling_script):
+        try:
+            with open(sibling_script, "r", encoding="utf-8", errors="replace") as f:
+                first_line = f.readline()
+            if first_line.startswith("#!"):
+                lower = first_line.lower()
+                if "python" in lower:
+                    return [sys.executable, sibling_script]
+                if "node" in lower:
+                    node = shutil.which("node") or "node"
+                    return [node, sibling_script]
+        except OSError:
+            pass
+
+    # 3. Parse shim file content
+    try:
+        with open(cmd_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError:
+        return None
+
+    def find_candidates(ext_pattern: str) -> list[str]:
+        regex = rf'\"([^\"\r\n]+{ext_pattern})\"|\'([^\'\r\n]+{ext_pattern})\'|([^\s\"\'=;]+{ext_pattern})(?=\s|\"|\'|$)'
+        candidates = []
+        for m in re.finditer(regex, content, re.IGNORECASE):
+            token = m.group(1) or m.group(2) or m.group(3)
+            if token:
+                candidates.append(token)
+        return candidates
+
+    def expand_token(token: str) -> str:
+        clean = token.strip("\"'@")
+        expanded = clean.replace("%~dp0", cmd_dir + os.sep).replace("%dp0%", cmd_dir + os.sep)
+        return os.path.normpath(expanded.replace("\\", os.sep).replace("/", os.sep))
+
+    # 3a. Node.js script (genuine npm-style .cmd shims)
+    for token in find_candidates(r"\.[cm]?js"):
+        candidate = expand_token(token)
+        if os.path.isfile(candidate):
+            node_exe = os.path.join(cmd_dir, "node.exe")
+            node_bin = node_exe if os.path.isfile(node_exe) else (shutil.which("node") or "node")
+            return [node_bin, candidate]
+
+    # 3b. Standalone target .exe
+    for token in find_candidates(r"\.exe"):
+        candidate = expand_token(token)
+        if os.path.isfile(candidate) and candidate.lower() != os.path.abspath(cmd_path).lower():
+            base_name = os.path.basename(candidate).lower()
+            if "node" not in base_name and "python" not in base_name:
+                return [candidate]
+
+    # 3c. Python script
+    for token in find_candidates(r"\.py"):
+        candidate = expand_token(token)
+        if os.path.isfile(candidate):
+            py_exe = sys.executable
+            for exe_token in find_candidates(r"\.exe"):
+                cand_exe = expand_token(exe_token)
+                if os.path.isfile(cand_exe) and "python" in os.path.basename(cand_exe).lower():
+                    py_exe = cand_exe
+                    break
+            return [py_exe, candidate]
+
+    return None
+
+
 def resolve_argv_windows(argv: list[str]) -> list[str] | str:
     """On Windows, resolve .cmd / .bat / .exe shims and format for execution without shell injection."""
     if os.name != "nt" or not argv:
@@ -211,27 +299,9 @@ def resolve_argv_windows(argv: list[str]) -> list[str] | str:
     resolved = shutil.which(prog) or prog
     lower = resolved.lower()
     if lower.endswith((".cmd", ".bat")):
-        target_script = os.path.splitext(resolved)[0]
-        try:
-            if os.path.isfile(target_script):
-                with open(target_script, "r", encoding="utf-8", errors="replace") as f:
-                    first_line = f.readline()
-                if first_line.startswith("#!") and "python" in first_line.lower():
-                    return [sys.executable, target_script] + argv[1:]
-        except OSError:
-            pass
-        try:
-            if os.path.isfile(resolved):
-                with open(resolved, "r", encoding="utf-8", errors="replace") as f:
-                    cmd_content = f.read()
-                m = re.search(r'["\']?([^"\'\r\n]*python[^"\'\r\n]*)["\']?\s+["\']?%~dp0([^"\'\r\n]+)["\']?\s+%\*', cmd_content)
-                if m:
-                    py_bin = m.group(1).strip() or sys.executable
-                    script = os.path.join(os.path.dirname(resolved), m.group(2).strip())
-                    if os.path.isfile(script):
-                        return [py_bin, script] + argv[1:]
-        except OSError:
-            pass
+        unwrapped = unwrap_cmd_shim(resolved)
+        if unwrapped:
+            return unwrapped + argv[1:]
         comspec = os.environ.get("COMSPEC", "cmd.exe")
         inner = subprocess.list2cmdline([resolved] + argv[1:])
         return f'{comspec} /d /s /c "{inner}"'
