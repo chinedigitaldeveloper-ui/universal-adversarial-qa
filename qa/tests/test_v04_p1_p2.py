@@ -26,9 +26,11 @@ from helpers import (
 import aqa_reviewers as rv
 from aqa_core import (
     EXIT_INCOMPLETE,
+    UnsupportedShimError,
     _kill_tree,
     resolve_argv_windows,
     run_process,
+    run_process_bounded,
     scrubbed_env,
     sha256_file,
     unwrap_cmd_shim,
@@ -195,37 +197,27 @@ class QuestionClassificationTests(unittest.TestCase):
 
 
 class WindowsSupportTests(unittest.TestCase):
-    def test_resolve_argv_windows_cmd_bat(self):
-        with patch("os.name", "nt"), patch.dict("os.environ", {"COMSPEC": "C:\\Windows\\system32\\cmd.exe"}):
+    def test_resolve_argv_windows_cmd_bat_rejects_unsupported_shims(self):
+        with patch("os.name", "nt"):
             with patch("shutil.which", return_value="C:\\tools\\codex.cmd"):
-                resolved = resolve_argv_windows(["codex", "review"])
-                self.assertEqual(resolved, 'C:\\Windows\\system32\\cmd.exe /d /s /c "C:\\tools\\codex.cmd review"')
+                with self.assertRaises(UnsupportedShimError) as ctx:
+                    resolve_argv_windows(["codex", "review"])
+                self.assertIn("cannot safely execute Windows batch shim", str(ctx.exception))
 
             with patch("shutil.which", return_value="C:\\tools\\coderabbit.bat"):
-                resolved = resolve_argv_windows(["coderabbit", "--version"])
-                self.assertEqual(resolved, 'C:\\Windows\\system32\\cmd.exe /d /s /c "C:\\tools\\coderabbit.bat --version"')
+                with self.assertRaises(UnsupportedShimError) as ctx:
+                    resolve_argv_windows(["coderabbit", "--version"])
+                self.assertIn("cannot safely execute Windows batch shim", str(ctx.exception))
 
             with patch("shutil.which", return_value="C:\\Git\\bin\\git.exe"):
                 resolved = resolve_argv_windows(["git", "status"])
                 self.assertEqual(resolved, ["C:\\Git\\bin\\git.exe", "status"])
 
-    def test_resolve_argv_windows_cmd_with_spaces_and_metacharacters(self):
-        with (
-            patch("os.name", "nt"),
-            patch.dict("os.environ", {"COMSPEC": "C:\\Windows\\system32\\cmd.exe"}),
-            patch("shutil.which", return_value="C:\\Program Files (x86)\\tools\\codex.cmd"),
-        ):
-            cmd = resolve_argv_windows(["codex", "review", "--msg", "Fix: #35 with spaces", "--filter", "a & b | c < d > e ^ f %VAR%"])
-            # Must be a string starting with cmd.exe /d /s /c and outer double quotes
-            self.assertTrue(isinstance(cmd, str))
-            self.assertTrue(cmd.startswith('C:\\Windows\\system32\\cmd.exe /d /s /c "'))
-            self.assertTrue(cmd.endswith('"'))
-            # Path with spaces must be quoted inside
-            self.assertIn('"C:\\Program Files (x86)\\tools\\codex.cmd"', cmd)
-            # Argument with spaces must be quoted inside
-            self.assertIn('"Fix: #35 with spaces"', cmd)
-            # Argument with metacharacters must be quoted inside
-            self.assertIn('"a & b | c < d > e ^ f %VAR%"', cmd)
+    def test_resolve_argv_windows_cmd_with_spaces_and_metacharacters_fails_closed(self):
+        with patch("os.name", "nt"), patch("shutil.which", return_value="C:\\Program Files (x86)\\tools\\codex.cmd"):
+            with self.assertRaises(UnsupportedShimError) as ctx:
+                resolve_argv_windows(["codex", "review", "--msg", "Fix: #35 with spaces", "--filter", "a & b | c < d > e ^ f %VAR%"])
+            self.assertIn("cannot safely execute Windows batch shim", str(ctx.exception))
 
     def test_unwrap_genuine_npm_cmd_shim(self):
         with tempfile.TemporaryDirectory() as td:
@@ -268,20 +260,147 @@ class WindowsSupportTests(unittest.TestCase):
                 self.assertEqual(resolved[:2], unwrapped)
                 self.assertEqual(resolved[2:], ["exec", "-o", "out.json"])
 
-    def test_unwrap_sibling_exe_cmd_shim(self):
+    def test_unwrap_sibling_exe_verifies_invocation_statement_not_mere_existence(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            tool_exe = base / "codex.exe"
-            tool_exe.write_text("mock binary", encoding="utf-8")
-            tool_cmd = base / "codex.cmd"
-            tool_cmd.write_text('@echo off\r\n"%~dp0\\codex.exe" %*\r\n', encoding="utf-8")
+            tool_exe = base / "tool.exe"
+            tool_exe.write_text("decoy binary", encoding="utf-8")
+            actual_exe = base / "actual.exe"
+            actual_exe.write_text("actual binary", encoding="utf-8")
 
-            unwrapped = unwrap_cmd_shim(str(tool_cmd))
-            self.assertEqual(unwrapped, [str(tool_exe)])
+            # Case A: Same-stem tool.exe exists, but wrapper explicitly calls actual.exe
+            dispatch_cmd = base / "tool.cmd"
+            dispatch_cmd.write_text(f'@echo off\r\n"%~dp0\\{actual_exe.name}" --mode=prod %*\r\n', encoding="utf-8")
+
+            unwrapped = unwrap_cmd_shim(str(dispatch_cmd))
+            self.assertEqual(unwrapped, [str(actual_exe), "--mode=prod"])
+
+            # Case B: Same-stem tool.exe exists, but wrapper has no invocation statement calling it
+            stale_cmd = base / "stale.cmd"
+            stale_cmd.write_text("@echo off\r\nREM Sibling tool.exe exists but is not invoked\r\necho No-op\r\n", encoding="utf-8")
+
+            # Must NOT blindly execute tool.exe just because tool.exe exists
+            self.assertIsNone(unwrap_cmd_shim(str(stale_cmd)))
+
+            # Case C: Wrapper explicitly calls tool.exe
+            explicit_cmd = base / "explicit.cmd"
+            explicit_cmd.write_text(f'@echo off\r\n"%~dp0\\{tool_exe.name}" %*\r\n', encoding="utf-8")
+            self.assertEqual(unwrap_cmd_shim(str(explicit_cmd)), [str(tool_exe)])
+
+    def test_cmd_shim_misleading_references_in_comments_and_echo_ignored(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            fake_js = base / "fake.js"
+            fake_js.write_text("console.log('fake');\n", encoding="utf-8")
+            fake_exe = base / "fake.exe"
+            fake_exe.write_text("fake binary", encoding="utf-8")
+
+            mislead_cmd = base / "mislead.cmd"
+            mislead_cmd.write_text(
+                f"@echo off\r\n"
+                f"REM {fake_exe.name} reference in comment\r\n"
+                f":: node \"%~dp0\\{fake_js.name}\"\r\n"
+                f"echo Running {fake_js.name}...\r\n"
+                f"unsupported_dispatch_command %*\r\n",
+                encoding="utf-8"
+            )
+
+            # Must ignore fake references in comments / echo and fail closed on unsupported_dispatch_command
+            self.assertIsNone(unwrap_cmd_shim(str(mislead_cmd)))
+
+    def test_cmd_shim_fixed_arguments_preserved_in_order(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log('cli');\n", encoding="utf-8")
+
+            fixed_cmd = base / "fixed.cmd"
+            fixed_cmd.write_text(
+                f'@node "%~dp0\\{cli_js.name}" --fixed-flag --mode=strict %*\r\n',
+                encoding="utf-8"
+            )
+
+            unwrapped = unwrap_cmd_shim(str(fixed_cmd))
+            self.assertIsNotNone(unwrapped)
+            self.assertTrue(unwrapped[0].lower().endswith(("node", "node.exe")))
+            self.assertEqual(os.path.normcase(os.path.abspath(unwrapped[1])), os.path.normcase(os.path.abspath(str(cli_js))))
+            self.assertEqual(unwrapped[2:], ["--fixed-flag", "--mode=strict"])
 
             with patch("os.name", "nt"):
-                resolved = resolve_argv_windows([str(tool_cmd), "--version"])
-                self.assertEqual(resolved, [str(tool_exe), "--version"])
+                resolved = resolve_argv_windows([str(fixed_cmd), "user_arg1", "user_arg2"])
+                self.assertEqual(resolved[2:], ["--fixed-flag", "--mode=strict", "user_arg1", "user_arg2"])
+
+    def test_cmd_shim_unreproducible_environment_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log('cli');\n", encoding="utf-8")
+
+            env_cmd = base / "env.cmd"
+            env_cmd.write_text(
+                f'@echo off\r\n'
+                f'set CUSTOM_SECRET_KEY=12345\r\n'
+                f'set PATH=C:\\custom\\bin;%PATH%\r\n'
+                f'node "%~dp0\\{cli_js.name}" %*\r\n',
+                encoding="utf-8"
+            )
+
+            # Custom environment mutations cannot safely be reproduced without a shell; must fail closed
+            self.assertIsNone(unwrap_cmd_shim(str(env_cmd)))
+
+            with patch("os.name", "nt"), self.assertRaises(UnsupportedShimError):
+                resolve_argv_windows([str(env_cmd), "--version"])
+
+    def test_cmd_shim_missing_argument_forwarding_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log('cli');\n", encoding="utf-8")
+
+            no_fwd_cmd = base / "no_fwd.cmd"
+            no_fwd_cmd.write_text(
+                f'@node "%~dp0\\{cli_js.name}"\r\n',
+                encoding="utf-8"
+            )
+
+            # Missing %* would silently drop reviewer/check arguments; must fail closed
+            self.assertIsNone(unwrap_cmd_shim(str(no_fwd_cmd)))
+
+    def test_unsupported_cmd_returns_incomplete_and_never_launches_shell(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            marker_pwned = base / "PWNED.txt"
+
+            unsupported_cmd = base / "unsupported.cmd"
+            unsupported_cmd.write_text(
+                "@echo off\r\nunsupported_tool_binary %*\r\n",
+                encoding="utf-8"
+            )
+
+            malicious_prompt = (
+                "Review findings:\n"
+                "Line 1: defect found\n"
+                'Line 2: "quoted string" and \'single\'\n'
+                "Line 3: env ref %PATH% and %UNDEFINED_VAR%\n"
+                f"Line 4: injection attempt & echo PWNED > {marker_pwned!s} | dir < con ^"
+            )
+
+            with patch("os.name", "nt"):
+                # 1. Direct resolver check
+                with self.assertRaises(UnsupportedShimError):
+                    resolve_argv_windows([str(unsupported_cmd), "review", malicious_prompt])
+
+                # 2. run_process returns code 126 with diagnostic error
+                res_norm = run_process([str(unsupported_cmd), "review", malicious_prompt], base, seconds=30)
+                self.assertEqual(res_norm["code"], 126)
+                self.assertIn("cannot safely execute Windows batch shim", res_norm["stderr"])
+                self.assertFalse(marker_pwned.exists(), "Command injection executed via run_process!")
+
+                # 3. run_process_bounded returns code 126 with diagnostic error
+                res_bounded = run_process_bounded([str(unsupported_cmd), "review", malicious_prompt], base, seconds=30)
+                self.assertEqual(res_bounded["code"], 126)
+                self.assertIn("cannot safely execute Windows batch shim", res_bounded["stderr"])
+                self.assertFalse(marker_pwned.exists(), "Command injection executed via run_process_bounded!")
 
     def test_cmd_shim_argument_safety_and_metacharacters(self):
         with tempfile.TemporaryDirectory() as td:

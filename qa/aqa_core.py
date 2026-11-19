@@ -203,11 +203,42 @@ def _tail(text: str, limit: int | None) -> tuple[str, bool]:
     return text[-limit:], True
 
 
-def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
-    """Detect if a Windows .cmd/.bat shim wraps a direct executable, Node.js script, or Python script.
+class UnsupportedShimError(RuntimeError):
+    """Raised when a Windows .cmd / .bat shim cannot be safely verified and unwrapped for execution."""
 
-    Returning a list of [executable, ...args] allows running via Win32 CreateProcessW directly,
-    bypassing cmd.exe shell interpretation, %VARIABLE% expansion, and argument truncation on newlines.
+
+def _is_python_script(path: str) -> bool:
+    if path.lower().endswith(".py"):
+        return True
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                first = f.readline()
+            return first.startswith("#!") and "python" in first.lower()
+    except OSError:
+        pass
+    return False
+
+
+def _is_node_script(path: str) -> bool:
+    if path.lower().endswith((".js", ".cjs", ".mjs")):
+        return True
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                first = f.readline()
+            return first.startswith("#!") and "node" in first.lower()
+    except OSError:
+        pass
+    return False
+
+
+def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
+    """Detect and verify if a Windows .cmd/.bat shim wraps a direct executable, Node.js script, or Python script.
+
+    Only returns [executable, ...fixed_args] if the shim's invocation statement and target can be verified
+    with exact argument forwarding (%*). Unrecognized, complex, or unsafe shims return None to fail closed,
+    preventing arbitrary command injection and argument corruption via cmd.exe.
     """
     try:
         if not os.path.isfile(cmd_path):
@@ -216,83 +247,155 @@ def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
         return None
 
     cmd_dir = os.path.dirname(os.path.abspath(cmd_path))
-    stem = os.path.splitext(os.path.basename(cmd_path))[0]
 
-    # 1. Sibling .exe (e.g., codex.exe in the same folder as codex.cmd)
-    sibling_exe = os.path.join(cmd_dir, stem + ".exe")
-    if os.path.isfile(sibling_exe):
-        return [sibling_exe]
-
-    # 2. Sibling script without extension (common in test harnesses and git shims)
-    sibling_script = os.path.join(cmd_dir, stem)
-    if os.path.isfile(sibling_script):
-        try:
-            with open(sibling_script, "r", encoding="utf-8", errors="replace") as f:
-                first_line = f.readline()
-            if first_line.startswith("#!"):
-                lower = first_line.lower()
-                if "python" in lower:
-                    return [sys.executable, sibling_script]
-                if "node" in lower:
-                    node = shutil.which("node") or "node"
-                    return [node, sibling_script]
-        except OSError:
-            pass
-
-    # 3. Parse shim file content
     try:
         with open(cmd_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
+            raw_lines = f.readlines()
     except OSError:
         return None
 
-    def find_candidates(ext_pattern: str) -> list[str]:
-        regex = rf'\"([^\"\r\n]+{ext_pattern})\"|\'([^\'\r\n]+{ext_pattern})\'|([^\s\"\'=;]+{ext_pattern})(?=\s|\"|\'|$)'
-        candidates = []
-        for m in re.finditer(regex, content, re.IGNORECASE):
-            token = m.group(1) or m.group(2) or m.group(3)
-            if token:
-                candidates.append(token)
-        return candidates
-
     def expand_token(token: str) -> str:
-        clean = token.strip("\"'@")
+        clean = token.strip("\"'")
         expanded = clean.replace("%~dp0", cmd_dir + os.sep).replace("%dp0%", cmd_dir + os.sep)
         return os.path.normpath(expanded.replace("\\", os.sep).replace("/", os.sep))
 
-    # 3a. Node.js script (genuine npm-style .cmd shims)
-    for token in find_candidates(r"\.[cm]?js"):
-        candidate = expand_token(token)
-        if os.path.isfile(candidate):
-            node_exe = os.path.join(cmd_dir, "node.exe")
-            node_bin = node_exe if os.path.isfile(node_exe) else (shutil.which("node") or "node")
-            return [node_bin, candidate]
+    def split_cmd_tokens(cmd_str: str) -> list[str]:
+        tokens = []
+        for m in re.finditer(r'"([^"]*)"|(\S+)', cmd_str):
+            val = m.group(1) if m.group(1) is not None else m.group(2)
+            tokens.append(val)
+        return tokens
 
-    # 3b. Standalone target .exe
-    for token in find_candidates(r"\.exe"):
-        candidate = expand_token(token)
-        if os.path.isfile(candidate) and candidate.lower() != os.path.abspath(cmd_path).lower():
-            base_name = os.path.basename(candidate).lower()
-            if "node" not in base_name and "python" not in base_name:
-                return [candidate]
+    candidates: list[list[str]] = []
 
-    # 3c. Python script
-    for token in find_candidates(r"\.py"):
-        candidate = expand_token(token)
-        if os.path.isfile(candidate):
-            py_exe = sys.executable
-            for exe_token in find_candidates(r"\.exe"):
-                cand_exe = expand_token(exe_token)
-                if os.path.isfile(cand_exe) and "python" in os.path.basename(cand_exe).lower():
-                    py_exe = cand_exe
-                    break
-            return [py_exe, candidate]
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
 
-    return None
+        # Ignore comments
+        if lower.startswith(("rem ", "rem\t", "::")) or lower == "rem":
+            continue
+
+        # Ignore harmless boilerplate
+        clean_lower = lower.lstrip("@").strip()
+        if clean_lower in ("echo off", "echo on", "setlocal", "endlocal"):
+            continue
+        if lower.startswith(("echo ", "@echo ", "title ")):
+            continue
+        if stripped.startswith(":") or clean_lower.startswith(("goto ", "call :", "exit /b", "exit")):
+            continue
+
+        # Check environment mutations: only allow standard npm shim boilerplate
+        if clean_lower.startswith("set "):
+            var_assign = clean_lower[4:].strip().strip('"')
+            if var_assign.startswith("dp0=%~dp0") or var_assign.startswith('"dp0=%~dp0'):
+                continue
+            if var_assign.startswith("_prog=") and ("node" in var_assign):
+                continue
+            if var_assign.startswith("pathext="):
+                continue
+            # Any other custom environment setup cannot safely be reproduced without a shell
+            return None
+
+        # Ignore boilerplate block structure
+        if clean_lower in ("(", ")", ") else (", ") else", "else (", "else"):
+            continue
+        if clean_lower.startswith("if exist") and "node.exe" in clean_lower:
+            continue
+
+        # Extract command part
+        cmd_part = stripped
+        if "title %comspec% &" in lower:
+            idx = lower.index("title %comspec% &") + len("title %comspec% &")
+            cmd_part = stripped[idx:].strip()
+        elif cmd_part.startswith("@"):
+            cmd_part = cmd_part[1:].strip()
+
+        # Reject any unmanaged shell piping, redirection, or unmanaged chaining
+        if any(ch in cmd_part for ch in ("<", ">", "|", "&")):
+            return None
+
+        tokens = split_cmd_tokens(cmd_part)
+        if not tokens:
+            continue
+
+        # Must forward arguments with %*
+        if tokens[-1] not in ("%*", '"%*"'):
+            return None
+
+        call_tokens = tokens[:-1]
+        prog_token = call_tokens[0]
+        remaining = call_tokens[1:]
+
+        prog_lower = prog_token.lower()
+
+        # 1. Node.js wrapper
+        if prog_lower in ("%_prog%", '"%_prog%"', "node", "node.exe") or prog_lower.endswith(("\\node.exe", "/node.exe")):
+            if "%_prog%" in prog_lower:
+                sibling_node = os.path.join(cmd_dir, "node.exe")
+                node_bin = sibling_node if os.path.isfile(sibling_node) else (shutil.which("node") or "node")
+            else:
+                cand = expand_token(prog_token)
+                node_bin = cand if os.path.isfile(cand) else (shutil.which("node") or "node")
+
+            js_indices = [i for i, t in enumerate(remaining) if _is_node_script(expand_token(t))]
+            if len(js_indices) != 1:
+                return None
+            idx = js_indices[0]
+            cand_js = expand_token(remaining[idx])
+            if not os.path.isfile(cand_js):
+                return None
+            pre_flags = remaining[:idx]
+            post_flags = remaining[idx + 1:]
+            candidates.append([node_bin] + pre_flags + [cand_js] + post_flags)
+            continue
+
+        # 2. Python wrapper
+        if "python" in os.path.basename(prog_lower):
+            cand_py = expand_token(prog_token)
+            py_bin = cand_py if os.path.isfile(cand_py) else sys.executable
+            py_indices = [i for i, t in enumerate(remaining) if _is_python_script(expand_token(t))]
+            if len(py_indices) != 1:
+                return None
+            idx = py_indices[0]
+            cand_script = expand_token(remaining[idx])
+            if not os.path.isfile(cand_script):
+                return None
+            pre_flags = remaining[:idx]
+            post_flags = remaining[idx + 1:]
+            candidates.append([py_bin] + pre_flags + [cand_script] + post_flags)
+            continue
+
+        # 3. Direct executable
+        if prog_lower.endswith(".exe"):
+            cand_exe = expand_token(prog_token)
+            if not os.path.isfile(cand_exe) or cand_exe.lower() == os.path.abspath(cmd_path).lower():
+                return None
+            candidates.append([cand_exe] + remaining)
+            continue
+
+        # Any unrecognized command invocation
+        return None
+
+    if not candidates:
+        return None
+
+    # Verify consistency across candidates (e.g. IF EXIST ELSE branches in classic npm)
+    first = candidates[0]
+    for other in candidates[1:]:
+        if other[1:] != first[1:]:
+            return None
+
+    return first
 
 
-def resolve_argv_windows(argv: list[str]) -> list[str] | str:
-    """On Windows, resolve .cmd / .bat / .exe shims and format for execution without shell injection."""
+def resolve_argv_windows(argv: list[str]) -> list[str]:
+    """On Windows, resolve .cmd / .bat shims into direct executable arguments without shell injection.
+
+    Raises UnsupportedShimError if the wrapper cannot be safely verified and unwrapped.
+    """
     if os.name != "nt" or not argv:
         return argv
     prog = argv[0]
@@ -302,9 +405,10 @@ def resolve_argv_windows(argv: list[str]) -> list[str] | str:
         unwrapped = unwrap_cmd_shim(resolved)
         if unwrapped:
             return unwrapped + argv[1:]
-        comspec = os.environ.get("COMSPEC", "cmd.exe")
-        inner = subprocess.list2cmdline([resolved] + argv[1:])
-        return f'{comspec} /d /s /c "{inner}"'
+        raise UnsupportedShimError(
+            f"cannot safely execute Windows batch shim '{resolved}': "
+            "unsupported or unrecognized wrapper format (shell fallback disabled for security)"
+        )
     if resolved != prog:
         return [resolved] + argv[1:]
     return argv
@@ -321,8 +425,12 @@ def run_process(argv: list[str], cwd: Path, seconds: int = 600, env: dict[str, s
         return {"code": code, "stdout": out, "stderr": err, "timed_out": timed_out,
                 "truncated": t1 or t2, "duration_seconds": round(time.monotonic() - started, 3)}
 
+    try:
+        cmd_argv = resolve_argv_windows(argv)
+    except UnsupportedShimError as exc:
+        return result(126, "", str(exc))
+
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    cmd_argv = resolve_argv_windows(argv)
     try:
         proc = subprocess.Popen(
             cmd_argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -360,8 +468,15 @@ def run_process_bounded(argv: list[str], cwd: Path, seconds: int = 600,
     if stdout_limit < 1 or stderr_limit < 1:
         raise ValueError("bounded output limits must be positive")
     started = time.monotonic()
+
+    try:
+        cmd_argv = resolve_argv_windows(argv)
+    except UnsupportedShimError as exc:
+        return {"code": 126, "stdout": "", "stderr": str(exc), "timed_out": False,
+                "truncated": False, "output_limit_exceeded": False,
+                "duration_seconds": round(time.monotonic() - started, 3)}
+
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    cmd_argv = resolve_argv_windows(argv)
     try:
         proc = subprocess.Popen(
             cmd_argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
