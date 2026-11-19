@@ -94,7 +94,7 @@ Run commands from this directory (or the active worktree):
 
 - **Development Branch**: Active local development and all feature merges must target `dev` (never `main`).
 - **Protected `main` Branch**: `main` is strictly reserved for stable, authorized release snapshots (e.g. `v0.3.0`, `v0.4.0`). Never commit or merge directly into `main`. Promotion from `dev` to `main` requires explicit release approval.
-- **Worktrees**: Feature development should occur in worktrees under `../worktree/` or topic branches off `dev`.
+- **Worktree-First Development**: Always start new work in a dedicated worktree under `../worktree/` (e.g., `worktree/<task-name>`). Direct commits to `dev` are strictly reserved for trivial edits (e.g., a couple of lines of documentation or quick fixes). All substantive changes must be developed and verified in worktrees before merging into `dev`.
 - **Pre-commit Checks**: Review `git status -sb` and `git diff --check` before committing.
 - **Commit Messages**: Use imperative commit subjects (e.g., `feat: ...`, `fix: ...`, `docs: ...`).
 - **Evidence Immutability**: Historical v0.3 receipts and PR #35 evidence under `../evidence/pr-35/original-v0.3/` are strictly immutable.
