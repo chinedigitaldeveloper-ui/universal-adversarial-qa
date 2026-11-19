@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "name": "UNCONFIGURED-copy-an-examples-policies-profile-here",
+  "required_categories": [
+    "test"
+  ],
+  "ai_review": {
+    "mode": "advisory",
+    "escalate_at": "major"
+  },
+  "checks": []
+}

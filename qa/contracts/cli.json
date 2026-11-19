@@ -1,0 +1,28 @@
+{
+  "contract_version": 1,
+  "note": "Contracts are derived from the exact invocations in qa/aqa_reviewers.py. A unit test asserts every flag the orchestrator passes is listed in must_contain, so the contract cannot drift from the code. `min` is enforced when set; leave it null for a tool until a pilot has established a tested floor, then pin it here through a reviewed change.",
+  "tools": {
+    "codex": {
+      "executable": "codex",
+      "version": {"argv": ["codex", "--version"], "regex": "(\\d+\\.\\d+\\.\\d+)", "min": null},
+      "probes": [
+        {
+          "name": "exec review flags",
+          "argv": ["codex", "exec", "--help"],
+          "must_contain": ["--ephemeral", "--sandbox", "--ignore-user-config", "--ignore-rules", "--output-schema", "-o"]
+        }
+      ]
+    },
+    "coderabbit": {
+      "executable": "coderabbit",
+      "version": {"argv": ["coderabbit", "--version"], "regex": "(\\d+\\.\\d+\\.\\d+)", "min": "0.9.5"},
+      "probes": [
+        {
+          "name": "review agent flags",
+          "argv": ["coderabbit", "review", "--help"],
+          "must_contain": ["--agent", "--gate", "--base-commit", "--include-untracked"]
+        }
+      ]
+    }
+  }
+}

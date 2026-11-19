@@ -1,0 +1,36 @@
+{
+  "$comment": "Output contract for `coderabbit review --agent` NDJSON. Only fields the gate decision depends on are required; everything else is typed-if-present so benign CLI additions do not break the run. Unknown event types (e.g. heartbeat) are ignored. A violation makes the CodeRabbit review INCOMPLETE rather than silently clean.",
+  "finding": {
+    "type": "object",
+    "required": ["type", "severity"],
+    "properties": {
+      "type": {"const": "finding"},
+      "severity": {"enum": ["critical", "major", "minor", "trivial", "info"]},
+      "fileName": {"type": "string"},
+      "title": {"type": "string"},
+      "comment": {"type": "string"},
+      "startLine": {"type": ["integer", "null"]},
+      "codegenInstructions": {"type": ["string", "null"]}
+    }
+  },
+  "complete": {
+    "type": "object",
+    "required": ["type", "gate"],
+    "properties": {
+      "type": {"const": "complete"},
+      "status": {"type": "string"},
+      "outcome": {"type": ["string", "null"]},
+      "unreviewedFileCount": {"type": ["integer", "null"], "minimum": 0},
+      "reused": {"type": ["boolean", "null"]},
+      "message": {"type": ["string", "null"]},
+      "gate": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": {"enum": ["passed", "blocked"]},
+          "threshold": {"type": "string"}
+        }
+      }
+    }
+  }
+}

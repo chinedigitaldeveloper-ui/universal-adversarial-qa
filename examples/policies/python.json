@@ -1,0 +1,117 @@
+{
+  "version": 2,
+  "name": "python",
+  "required_categories": [
+    "test",
+    "lint"
+  ],
+  "ai_review": {
+    "mode": "advisory",
+    "escalate_at": "major"
+  },
+  "checks": [
+    {
+      "name": "ruff-format",
+      "category": "format",
+      "argv": [
+        "ruff",
+        "format",
+        "--check",
+        "."
+      ],
+      "timeout_seconds": 300
+    },
+    {
+      "name": "ruff",
+      "category": "lint",
+      "argv": [
+        "ruff",
+        "check",
+        "."
+      ],
+      "timeout_seconds": 300
+    },
+    {
+      "name": "mypy",
+      "category": "types",
+      "argv": [
+        "mypy",
+        "."
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "pytest",
+      "category": "test",
+      "argv": [
+        "python",
+        "-m",
+        "pytest",
+        "-q"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "name": "bandit",
+      "category": "sast",
+      "argv": [
+        "bandit",
+        "-q",
+        "-r",
+        ".",
+        "-x",
+        "./tests,./.venv"
+      ],
+      "timeout_seconds": 600,
+      "required": false,
+      "exit_codes": {
+        "pass": [
+          0
+        ],
+        "fail": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "pip-audit",
+      "category": "deps",
+      "argv": [
+        "pip-audit"
+      ],
+      "timeout_seconds": 600,
+      "required": false,
+      "exit_codes": {
+        "pass": [
+          0
+        ],
+        "fail": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "gitleaks",
+      "category": "secrets",
+      "argv": [
+        "gitleaks",
+        "detect",
+        "--source",
+        ".",
+        "--redact",
+        "--no-banner",
+        "--log-opts={base}..HEAD"
+      ],
+      "timeout_seconds": 300,
+      "required": false,
+      "exit_codes": {
+        "pass": [
+          0
+        ],
+        "fail": [
+          1
+        ]
+      }
+    }
+  ]
+}

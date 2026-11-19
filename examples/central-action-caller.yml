@@ -1,0 +1,33 @@
+# Copy to .github/workflows/qa.yml of an adopter repository.
+# Publish this template repository first as YOUR_ORG/engineering-standards.
+# Replace REVIEWED_FULL_COMMIT_SHA with a reviewed 40-character commit SHA.
+name: Central Adversarial QA
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      # Insert repo-specific SDK/dependency install steps here, no API secrets.
+      - uses: YOUR_ORG/engineering-standards@REVIEWED_FULL_COMMIT_SHA
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+          policy: .qa/policy.json
+          policy-source: base   # use 'worktree' only for the PR that introduces the policy
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: qa-evidence
+          path: .qa/out/
+          if-no-files-found: warn

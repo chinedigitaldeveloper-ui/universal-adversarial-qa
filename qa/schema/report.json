@@ -1,0 +1,101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AQA evidence report v2",
+  "description": "report.json written by `aqa.py ci` and `aqa.py review`. Extra properties are allowed so minor versions can add fields; consumers must ignore what they do not know.",
+  "type": "object",
+  "required": ["schema_version", "pipeline", "tool_version", "repo", "base", "base_sha", "merge_base", "head_sha",
+               "started_at", "duration_seconds", "policy", "policy_changes", "risk", "rounds", "gate", "review"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "pipeline": {"enum": ["ci", "review"]},
+    "tool_version": {"type": "string"},
+    "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "merge_base": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "policy": {
+      "type": "object",
+      "required": ["path", "sha256", "source", "declared_version", "warnings"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source": {"enum": ["worktree", "base"]},
+        "declared_version": {"enum": [1, 2]},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "policy_changes": {
+      "type": "object",
+      "required": ["changed", "weakened", "removed_checks", "optional_checks", "removed_required_categories"],
+      "properties": {"changed": {"type": "boolean"}, "weakened": {"type": "boolean"}}
+    },
+    "risk": {
+      "type": "object",
+      "required": ["tier", "reasons", "changed_files", "changed_lines", "agents"],
+      "properties": {"tier": {"enum": ["low", "medium", "high"]}, "reasons": {"type": "array", "items": {"type": "string"}}}
+    },
+    "tools": {"type": "object"},
+    "rounds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "changed_files", "checks", "reviews", "findings", "verification", "gate", "escalations"],
+        "properties": {
+          "checks": {"type": "array", "items": {"$ref": "#/definitions/check"}},
+          "findings": {"type": "array", "items": {"$ref": "#/definitions/finding"}},
+          "gate": {"$ref": "#/definitions/gate"}
+        }
+      }
+    },
+    "gate": {"$ref": "#/definitions/gate"},
+    "review": {
+      "type": "object",
+      "required": ["selected_agents", "coverage", "human_review_required", "escalations"],
+      "properties": {
+        "selected_agents": {"enum": ["none", "codex", "coderabbit", "both"]},
+        "coverage": {"enum": ["none", "partial", "complete"]},
+        "human_review_required": {"type": "boolean"},
+        "escalations": {
+          "type": "array",
+          "items": {"type": "object", "required": ["kind", "detail"], "properties": {
+            "kind": {"enum": ["finding", "review_gap", "review_gate_blocked", "protected_files_changed",
+                              "policy_weakened", "high_risk_change", "fix_ineffective", "fix_scope_violation"]},
+            "detail": {"type": "string"}}}
+        }
+      }
+    }
+  },
+  "definitions": {
+    "gate": {
+      "type": "object",
+      "required": ["status", "reasons", "blocking_findings"],
+      "properties": {
+        "status": {"enum": ["passed", "failed", "incomplete"]},
+        "reasons": {"type": "array", "items": {"type": "string"}},
+        "blocking_findings": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "check": {
+      "type": "object",
+      "required": ["name", "category", "required", "status"],
+      "properties": {
+        "category": {"enum": ["format", "lint", "types", "test", "build", "sast", "secrets", "deps", "other"]},
+        "status": {"enum": ["passed", "failed", "incomplete", "skipped"]},
+        "exit_code": {"type": "integer"},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "log_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["id", "fingerprint", "reviewer", "severity", "file", "title", "disposition"],
+      "properties": {
+        "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+        "reviewer": {"enum": ["codex", "coderabbit"]},
+        "severity": {"enum": ["critical", "major", "minor", "trivial", "info"]},
+        "line": {"type": ["integer", "null"]},
+        "disposition": {"enum": ["open", "suppressed"]},
+        "recurring": {"type": "boolean"}
+      }
+    }
+  }
+}

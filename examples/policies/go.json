@@ -1,0 +1,114 @@
+{
+  "version": 2,
+  "name": "go",
+  "required_categories": [
+    "test",
+    "lint"
+  ],
+  "ai_review": {
+    "mode": "advisory",
+    "escalate_at": "major"
+  },
+  "checks": [
+    {
+      "name": "go-vet",
+      "category": "lint",
+      "argv": [
+        "go",
+        "vet",
+        "./..."
+      ],
+      "timeout_seconds": 600
+    },
+    {
+      "name": "golangci-lint",
+      "category": "lint",
+      "argv": [
+        "golangci-lint",
+        "run"
+      ],
+      "timeout_seconds": 900,
+      "required": false
+    },
+    {
+      "name": "go-test",
+      "category": "test",
+      "argv": [
+        "go",
+        "test",
+        "./..."
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "name": "go-build",
+      "category": "build",
+      "argv": [
+        "go",
+        "build",
+        "./..."
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "govulncheck",
+      "category": "deps",
+      "argv": [
+        "govulncheck",
+        "./..."
+      ],
+      "timeout_seconds": 600,
+      "required": false,
+      "exit_codes": {
+        "pass": [
+          0
+        ],
+        "fail": [
+          3
+        ]
+      }
+    },
+    {
+      "name": "gosec",
+      "category": "sast",
+      "argv": [
+        "gosec",
+        "-quiet",
+        "./..."
+      ],
+      "timeout_seconds": 600,
+      "required": false,
+      "exit_codes": {
+        "pass": [
+          0
+        ],
+        "fail": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "gitleaks",
+      "category": "secrets",
+      "argv": [
+        "gitleaks",
+        "detect",
+        "--source",
+        ".",
+        "--redact",
+        "--no-banner",
+        "--log-opts={base}..HEAD"
+      ],
+      "timeout_seconds": 300,
+      "required": false,
+      "exit_codes": {
+        "pass": [
+          0
+        ],
+        "fail": [
+          1
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+# Tests for this starter repository itself. NOT part of the template you copy into adopter repos.
+name: starter self-test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]      # Windows is not supported/tested in v0.2
+        python: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit and integration tests (fake CLIs; hermetic)
+        run: python -m unittest discover -s qa/tests -v

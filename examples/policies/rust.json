@@ -1,0 +1,100 @@
+{
+  "version": 2,
+  "name": "rust",
+  "required_categories": [
+    "test",
+    "lint"
+  ],
+  "ai_review": {
+    "mode": "advisory",
+    "escalate_at": "major"
+  },
+  "checks": [
+    {
+      "name": "cargo-fmt",
+      "category": "format",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "timeout_seconds": 300
+    },
+    {
+      "name": "clippy",
+      "category": "lint",
+      "argv": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "timeout_seconds": 1200
+    },
+    {
+      "name": "cargo-test",
+      "category": "test",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "name": "cargo-build",
+      "category": "build",
+      "argv": [
+        "cargo",
+        "build",
+        "--locked"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "name": "cargo-audit",
+      "category": "deps",
+      "argv": [
+        "cargo",
+        "audit"
+      ],
+      "timeout_seconds": 600,
+      "required": false,
+      "exit_codes": {
+        "pass": [
+          0
+        ],
+        "fail": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "gitleaks",
+      "category": "secrets",
+      "argv": [
+        "gitleaks",
+        "detect",
+        "--source",
+        ".",
+        "--redact",
+        "--no-banner",
+        "--log-opts={base}..HEAD"
+      ],
+      "timeout_seconds": 300,
+      "required": false,
+      "exit_codes": {
+        "pass": [
+          0
+        ],
+        "fail": [
+          1
+        ]
+      }
+    }
+  ]
+}

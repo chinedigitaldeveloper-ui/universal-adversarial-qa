@@ -1,0 +1,91 @@
+{
+  "version": 2,
+  "name": "flutter",
+  "required_categories": [
+    "test",
+    "lint"
+  ],
+  "ai_review": {
+    "mode": "advisory",
+    "escalate_at": "major"
+  },
+  "checks": [
+    {
+      "name": "dart-format",
+      "category": "format",
+      "argv": [
+        "dart",
+        "format",
+        "--output=none",
+        "--set-exit-if-changed",
+        "."
+      ],
+      "timeout_seconds": 300
+    },
+    {
+      "name": "flutter-analyze",
+      "category": "lint",
+      "argv": [
+        "flutter",
+        "analyze"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "name": "flutter-test",
+      "category": "test",
+      "argv": [
+        "flutter",
+        "test"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "name": "semgrep",
+      "category": "sast",
+      "argv": [
+        "semgrep",
+        "scan",
+        "--config",
+        "p/default",
+        "--error",
+        "--metrics",
+        "off",
+        "--quiet"
+      ],
+      "timeout_seconds": 900,
+      "required": false,
+      "exit_codes": {
+        "pass": [
+          0
+        ],
+        "fail": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "gitleaks",
+      "category": "secrets",
+      "argv": [
+        "gitleaks",
+        "detect",
+        "--source",
+        ".",
+        "--redact",
+        "--no-banner",
+        "--log-opts={base}..HEAD"
+      ],
+      "timeout_seconds": 300,
+      "required": false,
+      "exit_codes": {
+        "pass": [
+          0
+        ],
+        "fail": [
+          1
+        ]
+      }
+    }
+  ]
+}

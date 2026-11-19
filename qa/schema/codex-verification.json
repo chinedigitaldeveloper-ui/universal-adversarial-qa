@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["assessments"],
+  "properties": {
+    "assessments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "verdict", "evidence", "recommended_action"],
+        "properties": {
+          "id": {"type": "string"},
+          "verdict": {"enum": ["confirmed", "uncertain", "likely_false_positive"]},
+          "evidence": {"type": "string"},
+          "recommended_action": {"type": "string"}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,69 @@
+# Real-CLI contract verification for the optional AI tools (Pipeline A dependencies).
+# Run it on a schedule and on demand, NOT on pull requests: it proves the installed tools still match
+# qa/contracts/cli.json (version floor + the exact flags aqa.py passes) before developers rely on them.
+#
+# job `contracts` needs no credentials and spends no tokens (it only runs --version / --help).
+# job `live` runs the real tools on a seeded fixture: it needs API credentials and spends tokens, so it
+# is manual-only and should live in a protected environment.
+name: CLI contract smoke
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      live:
+        description: 'Also run the live smoke (uses credentials, spends tokens)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install the AI CLIs at the versions you intend to use
+        run: |
+          echo "TODO: install pinned versions of the Codex CLI and CodeRabbit CLI per their official docs."
+          exit 1
+      - name: Verify binaries against the contract (no auth, no cost)
+        run: python qa/aqa.py contracts verify
+      - name: Contract smoke report
+        run: python qa/aqa.py smoke --out smoke-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cli-contract-evidence
+          path: smoke-evidence/
+  live:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.live }}
+    needs: contracts
+    runs-on: ubuntu-latest
+    environment: ai-smoke               # protected environment holding the credentials
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install the AI CLIs
+        run: |
+          echo "TODO: same pinned install as above."
+          exit 1
+      - name: Live smoke on a seeded fixture
+        env:
+          # Provide the credentials your CLI versions expect via the protected environment.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODERABBIT_API_KEY: ${{ secrets.CODERABBIT_API_KEY }}
+        run: python qa/aqa.py smoke --live --out smoke-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cli-live-smoke-evidence
+          path: smoke-evidence/

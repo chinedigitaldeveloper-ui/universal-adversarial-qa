@@ -1,0 +1,16 @@
+# FUTURE CENTRALIZED DEPLOYMENT (example only, replace org/repo and commit pin).
+# Publish your maintained reusable workflow in a central engineering-standards repo.
+# Reuse it across codebases; pass a per-repository policy path.
+name: Central QA
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    uses: YOUR_ORG/engineering-standards/.github/workflows/reusable-qa.yml@REVIEWED_SHA
+    with:
+      policy-path: .qa/policy.json
+    # Do not use secrets: inherit for untrusted PR QA.

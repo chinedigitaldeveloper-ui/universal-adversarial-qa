@@ -1,0 +1,9 @@
+# Replace @YOUR_ORG/security-team with the actual owners, then enable
+# "Require review from Code Owners" in branch protection.
+# These files DEFINE the gate; whoever can change them silently can weaken it.
+/.qa/policy.json       @YOUR_ORG/security-team
+/.qa/resolutions.json  @YOUR_ORG/security-team
+/.coderabbit.yaml      @YOUR_ORG/security-team
+/qa/                   @YOUR_ORG/security-team
+/.github/workflows/    @YOUR_ORG/security-team
+/CODEOWNERS            @YOUR_ORG/security-team

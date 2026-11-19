@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AQA human resolutions (.qa/resolutions.json)",
+  "description": "Human-authored decisions about AI findings. Protect this file with CODEOWNERS. Entries expire (max 180 days) and the finding re-opens. 'fixed' is intentionally not a decision: a fixed finding simply stops being reported.",
+  "type": "object",
+  "required": ["version", "resolutions"],
+  "properties": {
+    "version": {"const": 1},
+    "resolutions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["fingerprint", "decision", "accepted_by", "reason", "expires"],
+        "properties": {
+          "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+          "decision": {"enum": ["false_positive", "accepted_risk"]},
+          "accepted_by": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 10},
+          "expires": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}
+        }
+      }
+    }
+  }
+}

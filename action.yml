@@ -1,0 +1,35 @@
+name: Portable Adversarial QA Gate (Pipeline B)
+description: Run the deterministic PR quality gate (no AI, no auto-fix) from a centrally pinned action
+inputs:
+  base:
+    description: Trusted base revision SHA or Git ref (use github.event.pull_request.base.sha)
+    required: true
+  policy:
+    description: Path to the per-repository policy JSON inside the caller checkout
+    required: false
+    default: .qa/policy.json
+  policy-source:
+    description: "'base' reads the policy from the base revision (a PR cannot weaken its own gate); 'worktree' reads the PR checkout"
+    required: false
+    default: base
+  output-dir:
+    description: Evidence directory in the caller checkout
+    required: false
+    default: .qa/out
+runs:
+  using: composite
+  steps:
+    - name: Run deterministic QA (Pipeline B)
+      shell: bash
+      env:
+        AQA_BASE: ${{ inputs.base }}
+        AQA_POLICY: ${{ inputs.policy }}
+        AQA_POLICY_SOURCE: ${{ inputs.policy-source }}
+        AQA_OUTPUT: ${{ inputs.output-dir }}
+      run: |
+        python3 "${{ github.action_path }}/qa/aqa.py" ci \
+          --repo "$GITHUB_WORKSPACE" \
+          --base "$AQA_BASE" \
+          --policy "$AQA_POLICY" \
+          --policy-source "$AQA_POLICY_SOURCE" \
+          --out "$AQA_OUTPUT"

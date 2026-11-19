@@ -1,0 +1,67 @@
+# Pipeline B - deterministic PR quality gate for any stack (edit the setup step).
+# Copy to .github/workflows/qa.yml, together with the qa/ directory and
+# .qa/policy.json (start from examples/policies/<your-stack>.json).
+#
+# Properties that make this a trustworthy gate:
+#   * trigger is pull_request (never pull_request_target); token is read-only
+#   * no AI step, no API keys, no auto-fix: the same inputs always give the same verdict
+#   * the orchestrator scrubs secrets from the environment of every check it runs
+#   * pin every action below to a reviewed full commit SHA before production use
+name: QA gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+concurrency:
+  group: aqa-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  deterministic-qa:
+    name: deterministic-qa          # the ONE status check to require in branch protection
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0            # the merge-base must be reachable
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065   # interpreter for the orchestrator itself
+        with:
+          python-version: '3.12'
+      # REQUIRED: install this repository's runtime and test dependencies here
+      # (see examples/workflows/pr-<stack>.yml). Without them the checks report INCOMPLETE.
+      # OPTIONAL SCANNERS (gitleaks, semgrep, ...): install pinned, checksum-verified
+      # versions here. While a scanner is not installed its check is SKIPPED and the
+      # report says so; once installed it is enforced. To make a category mandatory, set
+      # "required_categories" and "required": true in .qa/policy.json (reviewed by CODEOWNERS).
+
+      - name: Deterministic QA (no AI, no secrets, no auto-fix)
+        env:
+          AQA_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Base policy + base runner; the PR cannot edit the engine that judges it.
+          AQA_POLICY_SOURCE: base
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "$AQA_BASE_SHA:qa/aqa.py" 2>/dev/null; then
+            echo "INCOMPLETE: trusted QA runner missing from base; bootstrap requires an owner-reviewed merge" >&2
+            exit 3
+          fi
+          RUNNER_ROOT="$(mktemp -d)"
+          trap 'rm -rf "$RUNNER_ROOT"' EXIT
+          git archive "$AQA_BASE_SHA" qa | tar -x -C "$RUNNER_ROOT"
+          python "$RUNNER_ROOT/qa/aqa.py" ci \
+            --repo "$GITHUB_WORKSPACE" \
+            --base "$AQA_BASE_SHA" \
+            --policy .qa/policy.json \
+            --policy-source "$AQA_POLICY_SOURCE" \
+            --out .qa/out
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aqa-evidence
+          path: .qa/out/
+          if-no-files-found: warn
+          retention-days: 14
