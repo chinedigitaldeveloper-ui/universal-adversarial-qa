@@ -15,6 +15,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -165,7 +166,13 @@ def scrubbed_env(passthrough: Any = (), extra: dict[str, str] | None = None,
 
 def git_env() -> dict[str, str]:
     env = dict(os.environ)
-    env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_CONFIG_NOSYSTEM": "1"})
+    env.update({
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+    })
     return env
 
 
@@ -204,6 +211,27 @@ def resolve_argv_windows(argv: list[str]) -> list[str] | str:
     resolved = shutil.which(prog) or prog
     lower = resolved.lower()
     if lower.endswith((".cmd", ".bat")):
+        target_script = os.path.splitext(resolved)[0]
+        try:
+            if os.path.isfile(target_script):
+                with open(target_script, "r", encoding="utf-8", errors="replace") as f:
+                    first_line = f.readline()
+                if first_line.startswith("#!") and "python" in first_line.lower():
+                    return [sys.executable, target_script] + argv[1:]
+        except OSError:
+            pass
+        try:
+            if os.path.isfile(resolved):
+                with open(resolved, "r", encoding="utf-8", errors="replace") as f:
+                    cmd_content = f.read()
+                m = re.search(r'["\']?([^"\'\r\n]*python[^"\'\r\n]*)["\']?\s+["\']?%~dp0([^"\'\r\n]+)["\']?\s+%\*', cmd_content)
+                if m:
+                    py_bin = m.group(1).strip() or sys.executable
+                    script = os.path.join(os.path.dirname(resolved), m.group(2).strip())
+                    if os.path.isfile(script):
+                        return [py_bin, script] + argv[1:]
+        except OSError:
+            pass
         comspec = os.environ.get("COMSPEC", "cmd.exe")
         inner = subprocess.list2cmdline([resolved] + argv[1:])
         return f'{comspec} /d /s /c "{inner}"'
@@ -228,7 +256,7 @@ def run_process(argv: list[str], cwd: Path, seconds: int = 600, env: dict[str, s
     try:
         proc = subprocess.Popen(
             cmd_argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, errors="replace",
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
             start_new_session=(os.name == "posix"), creationflags=creationflags)
     except FileNotFoundError as exc:
         return result(127, "", str(exc))

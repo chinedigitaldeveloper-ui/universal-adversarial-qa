@@ -1,19 +1,30 @@
 """Regression tests for the three review findings and base-runner CI isolation."""
+import io
 import json
 import os
 import shutil
 import subprocess
-import sys
+import tarfile
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
-import helpers
-from helpers import PY, QA, Harness, commit_all, fake_coderabbit, passing_check, policy_v2, setup_repo, sh
 import aqa
 import aqa_core as core
 import aqa_reviewers as reviewers
+import helpers
+from helpers import (
+    PY,
+    QA,
+    Harness,
+    commit_all,
+    fake_coderabbit,
+    passing_check,
+    policy_v2,
+    setup_repo,
+    sh,
+)
 
 
 class CheckCrashTests(Harness):
@@ -142,14 +153,18 @@ class TrustedBaseRunnerTests(Harness):
         (target/'aqa.py').write_text('raise SystemExit(0)\n')
         (self.repo/'.qa/policy.json').write_text(json.dumps(policy_v2([passing_check()])))
         commit_all(self.repo, 'attempt to bypass QA')
-        self.assertEqual(subprocess.run([PY, str(target/'aqa.py')], cwd=self.repo).returncode, 0)
+        self.assertEqual(subprocess.run([PY, str(target / 'aqa.py')], check=False, cwd=self.repo).returncode, 0)
         with tempfile.TemporaryDirectory() as root:
-            subprocess.run(['bash','-c','set -euo pipefail; git archive "$1" qa | tar -x -C "$2"',
-                            'bash', trusted_base, root], cwd=self.repo, check=True)
-            trusted = Path(root)/'qa/aqa.py'
-            proc = subprocess.run([PY, str(trusted), 'ci','--repo',str(self.repo),
-                                   '--base',trusted_base,'--policy-source','base'],
-                                  cwd=self.repo, capture_output=True,text=True,env=self.env())
+            archive_data = subprocess.check_output(['git', 'archive', trusted_base, 'qa'], cwd=self.repo)
+            with tarfile.open(fileobj=io.BytesIO(archive_data)) as tar:
+                if hasattr(tarfile, 'data_filter'):
+                    tar.extractall(root, filter='data')
+                else:
+                    tar.extractall(root)
+            trusted = Path(root) / 'qa' / 'aqa.py'
+            proc = subprocess.run([PY, str(trusted), 'ci', '--repo', str(self.repo),
+                                   '--base', trusted_base, '--policy-source', 'base'],
+                                  check=False, cwd=self.repo, capture_output=True, text=True, env=self.env())
         self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
         self.assertEqual(self.report()['gate']['status'], 'failed')
 

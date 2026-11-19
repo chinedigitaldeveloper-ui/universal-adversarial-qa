@@ -16,8 +16,7 @@ QA = Path(__file__).resolve().parents[1]
 SCRIPT = QA / "aqa.py"
 sys.path.insert(0, str(QA))
 
-import aqa_core  # noqa: E402
-from aqa_core import validate_json  # noqa: E402
+from aqa_core import validate_json
 
 PY = sys.executable
 
@@ -178,11 +177,13 @@ class Harness(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY")}
         env["PATH"] = hermetic_path(self.tmp, self.bin)
         env["AQA_FAKE_LOG"] = str(self.fake_log)
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         env.update(extra)
         return env
 
     def aqa(self, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-        return subprocess.run([PY, str(SCRIPT), *args], capture_output=True, text=True, env=env or self.env(), cwd=self.repo)
+        return subprocess.run([PY, str(SCRIPT), *args], capture_output=True, text=True, encoding="utf-8", errors="replace", env=env or self.env(), cwd=self.repo, check=False)
 
     def ci(self, *extra: str, **env: str) -> subprocess.CompletedProcess:
         return self.aqa("ci", "--repo", str(self.repo), "--base", "main", *extra, env=self.env(**env))
