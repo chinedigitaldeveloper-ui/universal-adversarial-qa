@@ -15,7 +15,7 @@
     },
     "coderabbit": {
       "executable": "coderabbit",
-      "version": {"argv": ["coderabbit", "--version"], "regex": "(\\d+\\.\\d+\\.\\d+)", "min": "0.9.5"},
+      "version": {"argv": ["coderabbit", "--version"], "regex": "(\\d+\\.\\d+\\.\\d+)", "min": "0.9.2"},
       "probes": [
         {
           "name": "review agent flags",

@@ -94,7 +94,7 @@ class ReviewerGapTests(Harness):
     def test_contract_violation_means_the_tool_is_never_invoked(self):
         setup_repo(self.repo)
         fake_codex(self.bin)
-        fake_coderabbit(self.bin, version="coderabbit 0.9.4")
+        fake_coderabbit(self.bin, version="coderabbit 0.0.1")
         self.review("--agents", "both")
         self.assertFalse(any(x.startswith("coderabbit review") for x in self.invoked()))
         gap = self.report()["rounds"][0]["reviews"]["coderabbit"]

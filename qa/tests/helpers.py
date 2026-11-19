@@ -39,6 +39,7 @@ def setup_repo(root: Path, policy: dict[str, Any] | None = None, change: str = "
     sh(root, "git", "init", "-q", "-b", "main")
     sh(root, "git", "config", "user.email", "test@example.invalid")
     sh(root, "git", "config", "user.name", "Test")
+    sh(root, "git", "config", "commit.gpgsign", "false")
     (root / ".qa").mkdir(exist_ok=True)
     (root / ".qa" / "policy.json").write_text(json.dumps(policy if policy is not None else policy_v2()), encoding="utf-8")
     (root / ".gitignore").write_text(".qa/out/\n", encoding="utf-8")

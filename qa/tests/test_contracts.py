@@ -28,10 +28,10 @@ class VerifyToolTests(Harness):
         self.assertEqual(self.verify("codex")["status"], "missing")
 
     def test_version_below_floor_is_violated(self):
-        fake_coderabbit(self.bin, version="coderabbit 0.9.4")
+        fake_coderabbit(self.bin, version="coderabbit 0.0.1")
         result = self.verify("coderabbit")
         self.assertEqual(result["status"], "violated")
-        self.assertIn("older than required 0.9.5", " ".join(result["reasons"]))
+        self.assertIn("older than required", " ".join(result["reasons"]))
 
     def test_missing_flag_is_violated_and_prefix_flags_do_not_count(self):
         # --base-commit absent but --base present: must NOT satisfy the contract

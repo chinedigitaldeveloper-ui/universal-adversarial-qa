@@ -503,6 +503,7 @@ def smoke_fixture(root: Path) -> str:
     sh("git", "init", "-q", "-b", "main")
     sh("git", "config", "user.email", "smoke@example.invalid")
     sh("git", "config", "user.name", "Smoke")
+    sh("git", "config", "commit.gpgsign", "false")
     (root / "app.py").write_text('def get_user(db, name):\n    return db.execute("SELECT * FROM users WHERE name = ?", (name,))\n', encoding="utf-8")
     sh("git", "add", ".")
     sh("git", "commit", "-qm", "baseline")
