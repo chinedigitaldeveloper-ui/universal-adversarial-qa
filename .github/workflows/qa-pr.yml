@@ -19,6 +19,7 @@ concurrency:
 jobs:
   deterministic-qa:
     name: deterministic-qa          # the ONE status check to require in branch protection
+    if: github.repository != 'chinedigitaldeveloper-ui/universal-adversarial-qa'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

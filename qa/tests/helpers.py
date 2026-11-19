@@ -40,17 +40,19 @@ def setup_repo(root: Path, policy: dict[str, Any] | None = None, change: str = "
     sh(root, "git", "config", "user.email", "test@example.invalid")
     sh(root, "git", "config", "user.name", "Test")
     sh(root, "git", "config", "commit.gpgsign", "false")
+    sh(root, "git", "config", "core.autocrlf", "false")
+    sh(root, "git", "config", "core.whitespace", "cr-at-eol")
     (root / ".qa").mkdir(exist_ok=True)
-    (root / ".qa" / "policy.json").write_text(json.dumps(policy if policy is not None else policy_v2()), encoding="utf-8")
-    (root / ".gitignore").write_text(".qa/out/\n", encoding="utf-8")
-    (root / "demo.txt").write_text("baseline\n", encoding="utf-8")
+    (root / ".qa" / "policy.json").write_text(json.dumps(policy if policy is not None else policy_v2()), encoding="utf-8", newline="\n")
+    (root / ".gitignore").write_text(".qa/out/\n", encoding="utf-8", newline="\n")
+    (root / "demo.txt").write_text("baseline\n", encoding="utf-8", newline="\n")
     sh(root, "git", "add", ".")
     sh(root, "git", "commit", "-qm", "baseline")
     sh(root, "git", "switch", "-qc", "feature")
     target = root / change
     target.parent.mkdir(parents=True, exist_ok=True)
     existing = target.read_text(encoding="utf-8") if target.exists() else ""
-    target.write_text(existing + "change\n", encoding="utf-8")
+    target.write_text(existing + "change\n", encoding="utf-8", newline="\n")
     sh(root, "git", "add", ".")
     sh(root, "git", "commit", "-qm", "change")
 

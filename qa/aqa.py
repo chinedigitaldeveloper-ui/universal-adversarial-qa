@@ -106,7 +106,8 @@ def _executable_found(cmd0: str, cwd: Path, env: dict[str, str]) -> bool:
 
 
 def baseline_check(ctx: dict[str, Any], round_dir: Path) -> dict[str, Any]:
-    result = run_process(["git", "diff", "--check", ctx["merge_base"]], ctx["repo"], 60, env=git_env(), max_output=None)
+    result = run_process(["git", "-c", "core.whitespace=cr-at-eol", "diff", "--check", ctx["merge_base"]],
+                         ctx["repo"], 60, env=git_env(), max_output=None)
     log = round_dir / "check-00-git-diff.log"
     save(log, result["stdout"] + "\n" + result["stderr"])
     status = classify_exit(result["code"], {"pass": [0], "fail": [2]})

@@ -136,6 +136,7 @@ class SecurityBoundaryTests(Harness):
         self.assertIn("CLEAN", proc.stdout)
         self.assertEqual(self.invoked(), [])
 
+    @unittest.skipIf(sys.platform == "win32", "Windows filesystems do not allow newlines or colons in filenames")
     def test_github_annotations_cannot_be_injected_through_file_names(self):
         evil = ".github/workflows/x\n::set-output name=pwned::1\n.yml"
         setup_repo(self.repo, change=evil)

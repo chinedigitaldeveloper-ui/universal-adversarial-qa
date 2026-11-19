@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,7 +33,10 @@ class TreeProvenanceTests(Harness):
         self.assertTrue(fp1["fingerprint"].startswith("aqa-tree-v1:"))
 
         # Add a file with special chars
-        special_file = self.repo / "test:file with spaces and \n newline.txt"
+        if sys.platform == "win32":
+            special_file = self.repo / "test file with spaces and unicode 🚀 (extra).txt"
+        else:
+            special_file = self.repo / "test:file with spaces and \n newline.txt"
         special_file.write_bytes(b"hello world")
         fp2 = core.compute_tree_provenance(self.repo, exclude_dir=self.tmp / "out")
         self.assertNotEqual(fp1["fingerprint"], fp2["fingerprint"])
