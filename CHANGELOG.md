@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 — evidence reproducibility, provenance, degradation detection & Windows support
+
+### Added
+* **Working tree provenance (`aqa-tree-v1`)**: Canonical length-prefixed working tree fingerprinting accounting for staged changes, unstaged changes, untracked non-ignored files, deletions, symlinks (without traversing outside repository scope), binary files, and special filenames (newlines, spaces).
+* **Strict provenance policy**: In CI (Pipeline B), tree mutation during check execution yields `INCOMPLETE` under `provenance.enforce_tree_unchanged: true`. In local review (Pipeline A), tree mutation produces an advisory escalation.
+* **Reviewer degradation detection**: Inspects reviewer stderr streams for degradation signals (rate limits, quota exhaustion, context window limits, token exhaustion, model fallback, truncated output) without false positives on harmless logs.
+* **Strict reviewer enforcement**: Added `--require-reviewers` flag to `review`; exits with code 3 (`INCOMPLETE`) if any selected reviewer is missing, incomplete, or degraded.
+* **Explicit finding counts**: Detailed count structures (`finding_counts`) tracking raw CLI events, raw finding events, accepted findings, deduplicated findings, open findings, suppressed findings, and breakdowns by reviewer and severity; Markdown summary renders "0 findings" when empty.
+* **Human triage annotations (`.qa/triage.json`)**: CODEOWNERS-protected triage workflow metadata schema (`qa/schema/triage.json`) and loader; triage annotations attach to findings without independently changing gate outcomes or suppressing findings (`.qa/resolutions.json` remains authoritative).
+* **Question-vs-defect classification**: Classifies findings as `question` vs `defect` using explicit reviewer fields or `Question:` title prefix heuristics (`kind_source: "heuristic"`); invariant enforced: question classification never downgrades severity or suppresses findings.
+* **Windows platform support (P1)**: Resolved `.cmd` and `.bat` execution via `resolve_argv_windows` and `COMSPEC`; cross-platform process tree termination via `taskkill /F /T /PID` and `CREATE_NEW_PROCESS_GROUP`; case-insensitive environment scrubbing preserving Windows system essentials; path normalization.
+* **Evidence integrity & artifact hashing**: Exact post-redaction SHA-256 digest of every saved artifact file recorded under `artifact_hashes` in `report.json`.
+* **Derived evidence labeling**: Clear visual banners in reports and Markdown for derived/replayed evidence (`evidence_type: "derived"`) preserving original v0.3 execution records.
+* **Capability probe**: Added `doctor --probe` operation to actively test reviewer CLI execution, latency, and authentication without running on every review.
+
+### Changed
+* Schema version remains `schema_version: 2` with additive, backward-compatible optional fields (`provenance`, `artifact_hashes`, `evidence_type`, `finding_counts`, `finding.kind`, `finding.triage`).
+* Production policy templates in `examples/policies/*.json` updated with explicit `provenance.enforce_tree_unchanged: true`.
+
 ## 0.3.0 — pilot evidence hardening
 
 * Fixed production PR templates to use `AQA_POLICY_SOURCE: base`; composite action defaults to `base`.

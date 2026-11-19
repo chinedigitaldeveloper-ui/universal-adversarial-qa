@@ -32,14 +32,51 @@ def fingerprint(source: str, file_name: str, title: str) -> str:
     return sha256_text("%s|%s|%s" % (source, file_name, normalized))[:16]
 
 
+DEGRADATION_PATTERNS = [
+    re.compile(r"(?i)\b(rate\s*limit(ed)?|quota\s*exceeded|context\s*window\s*exceeded|maximum\s*context\s*length|token\s*limit\s*exceeded|model\s*fallback|response\s*truncated|partial\s*response)\b"),
+]
+
+
+def detect_degradation_in_stderr(stderr: str) -> list[str]:
+    reasons = []
+    for line in stderr.splitlines():
+        line_s = line.strip()
+        if not line_s or line_s.startswith(("[INFO]", "INFO:", "DEBUG:", "debug:")):
+            continue
+        for pat in DEGRADATION_PATTERNS:
+            if pat.search(line_s):
+                reasons.append(line_s[:160])
+                break
+    return reasons
+
+
+def classify_question(source: str, event_or_data: dict[str, Any], title: str, comment: str) -> tuple[str, str]:
+    """Classify finding as 'question' vs 'defect'.
+
+    Prefers an explicit field if present in CLI event; otherwise falls back to
+    'Question:' prefix heuristic. Never changes severity or gating disposition.
+    """
+    for key in ("findingType", "kind", "classification", "type_classification"):
+        val = event_or_data.get(key)
+        if isinstance(val, str) and val.strip().lower() in ("question", "defect"):
+            return val.strip().lower(), "explicit"
+    t_clean = (title or "").strip().lower()
+    c_clean = (comment or "").strip().lower()
+    if t_clean.startswith("question:") or c_clean.startswith("question:"):
+        return "question", "heuristic"
+    return "defect", "explicit" if source == "coderabbit" else "default"
+
+
 def make_finding(source: str, severity: str, file_name: str, line: Any, title: str, evidence: str,
-                 suggested_fix: str = "", suggested_test: str = "", confidence: Any = None) -> dict[str, Any]:
+                 suggested_fix: str = "", suggested_test: str = "", confidence: Any = None,
+                 kind: str = "defect", kind_source: str = "default") -> dict[str, Any]:
     line = line if isinstance(line, int) and not isinstance(line, bool) else None
     return {"id": finding_id(source, file_name, line, title), "fingerprint": fingerprint(source, file_name, title),
             "reviewer": source, "severity": severity, "file": file_name, "line": line, "title": title,
             "evidence": evidence[:2000], "suggested_fix": suggested_fix[:2000],
             "suggested_test": suggested_test[:1000], "confidence": confidence,
-            "disposition": "open", "recurring": False}
+            "disposition": "open", "recurring": False,
+            "kind": kind, "kind_source": kind_source}
 
 
 def dedupe(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -116,24 +153,37 @@ def coderabbit_review(repo: Path, merge_base: str, threshold: str, out: Path, fi
         or (complete.get("unreviewedFileCount") or 0) > 0 or (skipped and bool(files))
         or bool(complete.get("reused")) or gate.get("threshold", threshold) != threshold
     )
-    findings = [make_finding("coderabbit", str(e.get("severity", "info")).lower(), str(e.get("fileName") or ""),
-                             e.get("startLine"), str(e.get("title") or e.get("comment") or "CodeRabbit finding")[:300],
-                             str(e.get("comment") or ""), str(e.get("codegenInstructions") or ""))
-                for e in events if e.get("type") == "finding" and str(e.get("severity", "")).lower() in SEVERITY]
+    raw_findings_count = len([e for e in events if e.get("type") == "finding"])
+    findings = []
+    for e in events:
+        if e.get("type") == "finding" and str(e.get("severity", "")).lower() in SEVERITY:
+            sev = str(e.get("severity", "info")).lower()
+            fname = str(e.get("fileName") or "")
+            sline = e.get("startLine")
+            title = str(e.get("title") or e.get("comment") or "CodeRabbit finding")[:300]
+            comm = str(e.get("comment") or "")
+            instructions = str(e.get("codegenInstructions") or "")
+            k, k_src = classify_question("coderabbit", e, title, comm)
+            findings.append(make_finding("coderabbit", sev, fname, sline, title, comm,
+                                         suggested_fix=instructions, kind=k, kind_source=k_src))
     notes = []
     if result["timed_out"]:
         notes.append("timed out after %ds" % timeout)
     if result["code"] == 127:
         notes.append("coderabbit executable not found")
     notes += violations[:5]
+    degraded = not failure and not skipped and bool(detect_degradation_in_stderr(result["stderr"]))
+    if degraded:
+        notes += detect_degradation_in_stderr(result["stderr"])
     return {
-        "status": "incomplete" if failure else "skipped" if skipped else "completed",
+        "status": "incomplete" if failure else "skipped" if skipped else "degraded" if degraded else "completed",
         "exit_code": result["code"], "gate": gate, "findings": findings,
         "completion": {k: complete.get(k) for k in ("status", "outcome", "unreviewedFileCount", "reused", "message")},
         "contract_violations": violations, "non_json_lines": non_json,
+        "raw_events_count": len(events), "raw_findings_count": raw_findings_count,
         "output_truncated": result["truncated"], "output_limit_exceeded": result["output_limit_exceeded"],
         "duration_seconds": result["duration_seconds"],
-        "note": "; ".join(notes) if failure else "",
+        "note": "; ".join(notes) if (failure or degraded) else "",
     }
 
 
@@ -144,7 +194,9 @@ def codex_call(repo: Path, prompt: str, schema: Path | None, out: Path, writable
     out.parent.mkdir(parents=True, exist_ok=True)
     result = run_process(codex_argv(prompt, out, schema, writable), repo, timeout)
     save(out.with_suffix(".stderr.log"), result["stderr"])
-    base = {"exit_code": result["code"], "duration_seconds": result["duration_seconds"]}
+    degraded_reasons = detect_degradation_in_stderr(result["stderr"])
+    base = {"exit_code": result["code"], "duration_seconds": result["duration_seconds"],
+            "degraded": bool(degraded_reasons), "degradation_reasons": degraded_reasons}
     if result["timed_out"]:
         return {"status": "incomplete", "reason": "Codex timed out after %ds" % timeout, **base}
     if result["code"] != 0 or not out.is_file():
@@ -168,13 +220,23 @@ def codex_review(repo: Path, merge_base: str, out: Path, timeout: int = REVIEW_T
     raw = codex_call(repo, prompt, HERE / "schema" / "codex-review.json", out / "codex-review.json", timeout=timeout)
     if raw["status"] != "completed":
         return {"status": "incomplete", "findings": [], "note": raw["reason"],
+                "raw_events_count": 0, "raw_findings_count": 0,
                 "duration_seconds": raw["duration_seconds"]}
     data = raw["data"]
-    findings = [make_finding("codex", f["severity"], str(f["file"]), f["line"], str(f["title"]),
-                             str(f["evidence"]), str(f["suggested_fix"]), str(f["suggested_test"]), f["confidence"])
-                for f in data["findings"]]
-    return {"status": "completed", "findings": findings, "summary": str(data["summary"])[:1000],
-            "duration_seconds": raw["duration_seconds"], "note": ""}
+    findings = []
+    for f in data.get("findings", []):
+        title = str(f.get("title", ""))
+        evidence = str(f.get("evidence", ""))
+        k, k_src = classify_question("codex", f, title, evidence)
+        findings.append(make_finding("codex", f["severity"], str(f["file"]), f["line"], title,
+                                     evidence, str(f.get("suggested_fix", "")),
+                                     str(f.get("suggested_test", "")), f.get("confidence"),
+                                     kind=k, kind_source=k_src))
+    status = "degraded" if raw.get("degraded") else "completed"
+    note = ("Codex review degraded: " + "; ".join(raw.get("degradation_reasons", []))) if raw.get("degraded") else ""
+    return {"status": status, "findings": findings, "summary": str(data.get("summary", ""))[:1000],
+            "raw_events_count": 1, "raw_findings_count": len(data.get("findings", [])),
+            "duration_seconds": raw["duration_seconds"], "note": note}
 
 
 def verify_findings(repo: Path, merge_base: str, findings: list[dict[str, Any]], out: Path,
@@ -190,13 +252,15 @@ def verify_findings(repo: Path, merge_base: str, findings: list[dict[str, Any]],
                      timeout=timeout)
     if raw["status"] != "completed":
         return {"status": "incomplete", "assessments": [], "note": raw["reason"]}
-    assessments = raw["data"]["assessments"]
+    assessments = raw["data"].get("assessments", [])
     expected = {f["id"] for f in findings}
-    assessed = [x["id"] for x in assessments]
+    assessed = [x["id"] for x in assessments if isinstance(x, dict)]
     if set(assessed) != expected or len(assessed) != len(expected):
         return {"status": "incomplete", "assessments": assessments,
                 "note": "Verifier did not assess every unique finding exactly once"}
-    return {"status": "completed", "assessments": assessments}
+    status = "degraded" if raw.get("degraded") else "completed"
+    note = ("Verifier degraded: " + "; ".join(raw.get("degradation_reasons", []))) if raw.get("degraded") else ""
+    return {"status": status, "assessments": assessments, "note": note}
 
 
 def remediation(repo: Path, merge_base: str, evidence: dict[str, Any], out: Path,

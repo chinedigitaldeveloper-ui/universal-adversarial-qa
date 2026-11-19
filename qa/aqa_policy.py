@@ -14,7 +14,7 @@ from aqa_core import (ENV_NAME, MAX_CHECK_TIMEOUT, SEVERITY, git_env, looks_secr
 CATEGORIES = ("format", "lint", "types", "test", "build", "sast", "secrets", "deps", "other")
 LEVELS = {"low": 0, "medium": 1, "high": 2}
 AGENT_CHOICES = ("none", "codex", "coderabbit", "both")
-V2_KEYS = {"version", "name", "required_categories", "checks", "env_passthrough", "ai_review", "risk", "auto_fix"}
+V2_KEYS = {"version", "name", "required_categories", "checks", "env_passthrough", "ai_review", "risk", "auto_fix", "provenance"}
 CHECK_KEYS = {"name", "category", "argv", "timeout_seconds", "required", "exit_codes", "env",
               "env_passthrough", "cwd"}
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -44,7 +44,7 @@ DEFAULT_RISK_RULES: list[tuple[str, str, str]] = [
     ("**/*.md", "low", "documentation"), ("docs/**", "low", "documentation"),
     ("**/*.png", "low", "image asset"), ("**/*.jpg", "low", "image asset"), ("**/*.svg", "low", "image asset"),
 ]
-PROTECTED_GLOBS = [".qa/policy.json", ".qa/resolutions.json", ".github/workflows/**", "qa/**",
+PROTECTED_GLOBS = [".qa/policy.json", ".qa/resolutions.json", ".qa/triage.json", ".github/workflows/**", "qa/**",
                    "**/CODEOWNERS"]
 
 _GLOB_CACHE: dict[str, re.Pattern[str]] = {}
@@ -211,6 +211,9 @@ def normalize_policy(data: Any, repo: Path) -> tuple[dict[str, Any], list[str]]:
         _fail("auto_fix.max_files must be an integer in 1..100")
     if not isinstance(fix.get("enabled", False), bool):
         _fail("auto_fix.enabled must be a boolean")
+    prov = raw.get("provenance", {})
+    if not isinstance(prov, dict) or set(prov) - {"enforce_tree_unchanged", "enforce_clean_tree"}:
+        _fail("provenance may contain only 'enforce_tree_unchanged' and 'enforce_clean_tree'")
     policy = {
         "version": version, "name": raw.get("name", "unnamed"), "checks": checks,
         "required_categories": list(required),
@@ -220,6 +223,8 @@ def normalize_policy(data: Any, repo: Path) -> tuple[dict[str, Any], list[str]]:
         "auto_fix": {"enabled": fix.get("enabled", False), "max_files": max_files,
                      "allowed_paths": _str_list(fix.get("allowed_paths", ["**"]), "auto_fix.allowed_paths"),
                      "forbidden_paths": _str_list(fix.get("forbidden_paths", []), "auto_fix.forbidden_paths")},
+        "provenance": {"enforce_tree_unchanged": bool(prov.get("enforce_tree_unchanged", False)),
+                       "enforce_clean_tree": bool(prov.get("enforce_clean_tree", False))},
     }
     for name in policy["env_passthrough"]:
         if not ENV_NAME.match(name):
@@ -343,6 +348,46 @@ def load_resolutions(repo: Path, rel: str = ".qa/resolutions.json",
             warnings.append("resolution for %s expired on %s; finding is open again" % (fingerprint, expires))
             continue
         active[fingerprint] = {k: entry[k] for k in ("decision", "accepted_by", "reason", "expires")}
+    return active, warnings
+
+
+def load_triage(repo: Path, rel: str = ".qa/triage.json") -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Human triage notes. Validates schema and returns fingerprint -> triage data.
+    Triage annotations NEVER change gating or suppress findings.
+    Invalid file = configuration error (fail closed).
+    """
+    path = repo / rel
+    if not path.is_file():
+        return {}, []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        _fail("%s is not valid JSON: %s" % (rel, exc))
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("triage"), list):
+        _fail("%s must be {\"version\": 1, \"triage\": [...]}" % rel)
+    active: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+    VALID_STATUSES = {"investigating", "confirmed", "wont_fix", "deferred", "needs_info", "comment"}
+    for i, entry in enumerate(data["triage"]):
+        where = "%s triage[%d]" % (rel, i)
+        if not isinstance(entry, dict):
+            _fail(where + " must be an object")
+        fingerprint = entry.get("fingerprint")
+        if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{16}", fingerprint):
+            _fail(where + ".fingerprint must be 16 lowercase hex characters")
+        status = entry.get("status")
+        if status not in VALID_STATUSES:
+            _fail(where + ".status must be one of: " + ", ".join(sorted(VALID_STATUSES)))
+        triaged_by = entry.get("triaged_by") or entry.get("accepted_by")
+        if not isinstance(triaged_by, str) or not triaged_by.strip():
+            _fail(where + ".triaged_by is required")
+        comment = entry.get("comment") or entry.get("note") or ""
+        active[fingerprint] = {
+            "status": status,
+            "triaged_by": triaged_by.strip(),
+            "comment": comment,
+            **{k: entry[k] for k in ("ticket", "issue_url", "timestamp", "date") if k in entry}
+        }
     return active, warnings
 
 

@@ -20,14 +20,22 @@ def gh_escape(text: str) -> str:
 
 def markdown(report: dict[str, Any]) -> str:
     gate, review = report["gate"], report["review"]
-    lines = ["# Adversarial QA Report", "",
+    lines = ["# Adversarial QA Report", ""]
+    if report.get("evidence_type") == "derived" or report.get("derived"):
+        lines += ["> **Notice: Derived Evidence** (analyzed or replayed under v0.4; not original execution evidence)", ""]
+    lines += [
              "- Pipeline: `%s` (tool v%s)" % (report["pipeline"], report["tool_version"]),
              "- Repository: `%s`" % safe(report["repo"]),
              "- Base: `%s` (merge-base `%s`), HEAD `%s`" % (safe(report["base"]), report["merge_base"][:12], report["head_sha"][:12]),
              "- Policy: `%s` sha256 `%s` (source: %s)" % (safe(report["policy"]["path"]), report["policy"]["sha256"][:16], report["policy"]["source"]),
              "- Change risk: **%s**: %s" % (report["risk"]["tier"], safe("; ".join(report["risk"]["reasons"][:3]))),
              "- Gate: **%s**" % gate["status"].upper(),
-             "- Human review required: **%s**" % ("YES" if review["human_review_required"] else "no"), ""]
+             "- Human review required: **%s**" % ("YES" if review["human_review_required"] else "no")]
+    if report.get("provenance"):
+        prov = report["provenance"]
+        fp = prov.get("tree_fingerprint_end", prov.get("tree_fingerprint_start", ""))
+        lines.append("- Tree provenance: `%s` (mutated: %s)" % (fp, "yes" if prov.get("tree_changed") else "no"))
+    lines.append("")
     for warning in report.get("warnings", []):
         lines.append("> warning: " + safe(warning, 300))
     if report.get("warnings"):
@@ -41,13 +49,26 @@ def markdown(report: dict[str, Any]) -> str:
         for name, rv in part["reviews"].items():
             lines.append("")
             lines.append("Reviewer `%s`: %s%s" % (name, rv["status"], (" (%s)" % safe(rv["note"], 240)) if rv.get("note") else ""))
+        counts = part.get("finding_counts")
         if part["findings"]:
-            lines += ["", "| severity | reviewer | location | title | disposition | verifier |", "|---|---|---|---|---|---|"]
+            if counts:
+                lines += ["", "### Findings: %d open, %d suppressed (%d total accepted, %d raw)" % (
+                    counts["open_findings"], counts["suppressed_findings"],
+                    counts["accepted_findings"], counts["raw_finding_events"]), ""]
+            else:
+                lines += ["", "### Findings", ""]
+            lines += ["| severity | reviewer | location | title | disposition | verifier |", "|---|---|---|---|---|---|"]
             for f in part["findings"]:
+                disp = f["disposition"]
+                if f.get("triage"):
+                    disp += " [triage: %s]" % f["triage"].get("status", "")
+                if f.get("recurring"):
+                    disp += " (recurring)"
                 lines.append("| %s | %s | `%s:%s` | %s | %s | %s |" % (
                     f["severity"], f["reviewer"], safe(f["file"], 80), f["line"] or "?", safe(f["title"], 120),
-                    f["disposition"] + (" (recurring)" if f.get("recurring") else ""),
-                    (f.get("verification") or {}).get("verdict", "-")))
+                    disp, (f.get("verification") or {}).get("verdict", "-")))
+        else:
+            lines += ["", "### Findings: 0 findings (0 open, 0 suppressed)"]
         if part.get("fix_result"):
             lines += ["", "Fixer: %s, touched %d file(s)" % (part["fix_result"]["status"], len(part["fix_result"]["touched_files"]))]
         lines.append("")
@@ -111,7 +132,18 @@ def collect_reports(paths: list[Path]) -> tuple[list[dict[str, Any]], int]:
     return reports, invalid
 
 
-def pilot_summary(paths: list[Path], expected: dict[str, str], triage: dict[str, str]) -> dict[str, Any]:
+def pilot_summary(paths: list[Path], expected: dict[str, str], triage: dict[str, Any]) -> dict[str, Any]:
+    triage_map: dict[str, str] = {}
+    if isinstance(triage, dict):
+        if "triage" in triage and isinstance(triage["triage"], list):
+            status_alias = {"wont_fix": "wontfix", "confirmed": "actionable"}
+            for entry in triage["triage"]:
+                if isinstance(entry, dict) and "fingerprint" in entry:
+                    st = str(entry.get("status", ""))
+                    triage_map[entry["fingerprint"]] = status_alias.get(st, st)
+        else:
+            triage_map = {k: str(v) for k, v in triage.items()}
+
     reports, invalid = collect_reports(paths)
     gates = Counter(r["gate"]["status"] for r in reports)
     reasons: Counter[str] = Counter()
@@ -140,8 +172,8 @@ def pilot_summary(paths: list[Path], expected: dict[str, str], triage: dict[str,
                     reviewer_times[name].append(rv["duration_seconds"])
             for f in part["findings"]:
                 findings[f["reviewer"]][f["severity"]] += 1
-                if f["fingerprint"] in triage:
-                    labels[f["reviewer"]][triage[f["fingerprint"]]] += 1
+                if f["fingerprint"] in triage_map:
+                    labels[f["reviewer"]][triage_map[f["fingerprint"]]] += 1
             if part.get("fix_result"):
                 fix_attempts += 1
                 fix_violations += part["fix_result"]["status"] == "violation"

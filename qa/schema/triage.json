@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AQA human triage annotations (.qa/triage.json)",
+  "description": "Human triage notes and workflow annotations. Unlike .qa/resolutions.json, triage annotations NEVER suppress findings or change gating results.",
+  "type": "object",
+  "required": ["version", "triage"],
+  "properties": {
+    "version": {"const": 1},
+    "triage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["fingerprint", "status", "triaged_by"],
+        "properties": {
+          "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+          "status": {"enum": ["investigating", "confirmed", "wont_fix", "deferred", "needs_info", "comment"]},
+          "triaged_by": {"type": "string", "minLength": 1},
+          "comment": {"type": "string"},
+          "note": {"type": "string"},
+          "ticket": {"type": "string"},
+          "issue_url": {"type": "string"},
+          "timestamp": {"type": "string"},
+          "date": {"type": "string"}
+        }
+      }
+    }
+  }
+}

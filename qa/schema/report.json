@@ -58,10 +58,26 @@
           "type": "array",
           "items": {"type": "object", "required": ["kind", "detail"], "properties": {
             "kind": {"enum": ["finding", "review_gap", "review_gate_blocked", "protected_files_changed",
-                              "policy_weakened", "high_risk_change", "fix_ineffective", "fix_scope_violation"]},
+                              "policy_weakened", "high_risk_change", "fix_ineffective", "fix_scope_violation",
+                              "tree_mutation_detected", "reviewer_degraded"]},
             "detail": {"type": "string"}}}
         }
       }
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "algorithm": {"type": "string"},
+        "tree_fingerprint_start": {"type": "string"},
+        "tree_fingerprint_end": {"type": "string"},
+        "tree_changed": {"type": "boolean"}
+      }
+    },
+    "artifact_hashes": {
+      "type": "object"
+    },
+    "evidence_type": {
+      "enum": ["original", "derived"]
     }
   },
   "definitions": {
@@ -94,7 +110,10 @@
         "severity": {"enum": ["critical", "major", "minor", "trivial", "info"]},
         "line": {"type": ["integer", "null"]},
         "disposition": {"enum": ["open", "suppressed"]},
-        "recurring": {"type": "boolean"}
+        "recurring": {"type": "boolean"},
+        "kind": {"enum": ["defect", "question"]},
+        "kind_source": {"enum": ["explicit", "heuristic"]},
+        "triage": {"type": "object"}
       }
     }
   }

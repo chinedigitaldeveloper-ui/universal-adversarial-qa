@@ -9,6 +9,9 @@
     "mode": "advisory",
     "escalate_at": "major"
   },
+  "provenance": {
+    "enforce_tree_unchanged": true
+  },
   "checks": [
     {
       "name": "ruff-format",

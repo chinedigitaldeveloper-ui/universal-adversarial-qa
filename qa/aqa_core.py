@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -20,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 SEVERITY = {"none": 0, "info": 1, "trivial": 2, "minor": 3, "major": 4, "critical": 5}
 EXIT_PASSED, EXIT_FAILED, EXIT_INCOMPLETE, EXIT_ESCALATED = 0, 2, 3, 4
 MAX_OUTPUT = 30000
@@ -125,7 +126,10 @@ ENV_ALLOW = {
     "JAVA_HOME", "GOROOT", "GOPATH", "GOFLAGS", "GOCACHE", "GOMODCACHE", "CARGO_HOME", "RUSTUP_HOME",
     "PUB_CACHE", "FLUTTER_ROOT", "NVM_DIR", "PYENV_ROOT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONUTF8",
     "NODE_PATH", "DOTNET_ROOT", "ANDROID_HOME", "ANDROID_SDK_ROOT",
-    "SYSTEMROOT", "PATHEXT", "COMSPEC", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES",
+    # Windows system essentials (case-insensitively preserved on Windows)
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE",
+    "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA",
+    "COMMONPROGRAMFILES", "ALLUSERSPROFILE",
 }
 ENV_ALLOW_PREFIX = ("LC_", "XDG_")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -139,16 +143,29 @@ def scrubbed_env(passthrough: Any = (), extra: dict[str, str] | None = None,
                  source: dict[str, str] | None = None) -> dict[str, str]:
     src = os.environ if source is None else source
     allowed = set(passthrough)
-    env = {k: v for k, v in src.items()
-           if (k in ENV_ALLOW or k.startswith(ENV_ALLOW_PREFIX) or k in allowed)
-           and (not looks_secret(k) or k in allowed)}
+    is_win = os.name == "nt"
+    allowed_upper = {k.upper() for k in allowed}
+    env_allow_upper = {k.upper() for k in ENV_ALLOW}
+
+    def is_allowed(k: str) -> bool:
+        if is_win:
+            ku = k.upper()
+            return ku in env_allow_upper or any(ku.startswith(p.upper()) for p in ENV_ALLOW_PREFIX) or ku in allowed_upper
+        return k in ENV_ALLOW or k.startswith(ENV_ALLOW_PREFIX) or k in allowed
+
+    def is_secret_allowed(k: str) -> bool:
+        if not looks_secret(k):
+            return True
+        return (k.upper() in allowed_upper) if is_win else (k in allowed)
+
+    env = {k: v for k, v in src.items() if is_allowed(k) and is_secret_allowed(k)}
     env.update(extra or {})
     return env
 
 
 def git_env() -> dict[str, str]:
     env = dict(os.environ)
-    env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"})
+    env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_CONFIG_NOSYSTEM": "1"})
     return env
 
 
@@ -158,11 +175,17 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     try:
         if os.name == "posix":
             os.killpg(proc.pid, signal.SIGKILL)
+        elif os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            proc.kill()
         else:
             proc.kill()
     except (ProcessLookupError, PermissionError, OSError):
         try:
             proc.kill()
+        except OSError:
+            pass
         except OSError:
             pass
 
@@ -171,6 +194,21 @@ def _tail(text: str, limit: int | None) -> tuple[str, bool]:
     if limit is None or len(text) <= limit:
         return text, False
     return text[-limit:], True
+
+
+def resolve_argv_windows(argv: list[str]) -> list[str]:
+    """On Windows, resolve .cmd / .bat / .exe shims and format for execution without shell injection."""
+    if os.name != "nt" or not argv:
+        return argv
+    prog = argv[0]
+    resolved = shutil.which(prog) or prog
+    lower = resolved.lower()
+    if lower.endswith((".cmd", ".bat")):
+        comspec = os.environ.get("COMSPEC", "cmd.exe")
+        return [comspec, "/c", resolved] + argv[1:]
+    if resolved != prog:
+        return [resolved] + argv[1:]
+    return argv
 
 
 def run_process(argv: list[str], cwd: Path, seconds: int = 600, env: dict[str, str] | None = None,
@@ -184,11 +222,13 @@ def run_process(argv: list[str], cwd: Path, seconds: int = 600, env: dict[str, s
         return {"code": code, "stdout": out, "stderr": err, "timed_out": timed_out,
                 "truncated": t1 or t2, "duration_seconds": round(time.monotonic() - started, 3)}
 
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    cmd_argv = resolve_argv_windows(argv)
     try:
         proc = subprocess.Popen(
-            argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            cmd_argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, errors="replace",
-            start_new_session=(os.name == "posix"))
+            start_new_session=(os.name == "posix"), creationflags=creationflags)
     except FileNotFoundError as exc:
         return result(127, "", str(exc))
     except OSError as exc:
@@ -221,11 +261,13 @@ def run_process_bounded(argv: list[str], cwd: Path, seconds: int = 600,
     if stdout_limit < 1 or stderr_limit < 1:
         raise ValueError("bounded output limits must be positive")
     started = time.monotonic()
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    cmd_argv = resolve_argv_windows(argv)
     try:
         proc = subprocess.Popen(
-            argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
+            cmd_argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            start_new_session=(os.name == "posix"))
+            start_new_session=(os.name == "posix"), creationflags=creationflags)
     except (FileNotFoundError, OSError) as exc:
         return {"code": 127 if isinstance(exc, FileNotFoundError) else 126,
                 "stdout": "", "stderr": str(exc), "timed_out": False, "truncated": False,
@@ -359,6 +401,102 @@ def file_digests(repo: Path, paths: list[str]) -> dict[str, str]:
         else:
             digests[name] = "missing"
     return digests
+
+
+def compute_tree_provenance(repo: Path, exclude_dir: Path | None = None) -> dict[str, Any]:
+    """Compute working-tree provenance fingerprint using aqa-tree-v1.
+
+    Identifies observed working-tree bytes, not an immutable filesystem snapshot
+    or a cryptographic attestation. Encodes working-tree state into an unambiguous,
+    canonical, length-prefixed format before computing SHA-256.
+
+    Accounts for staged changes, unstaged changes, untracked non-ignored files,
+    deletions, symlinks (without following outside repository scope), binary files,
+    and filenames containing spaces, newlines, colons, or unicode surrogates.
+    """
+    try:
+        head_res = run_process(["git", "rev-parse", "HEAD"], repo, 30, env=git_env(), max_output=None)
+        head_sha = head_res["stdout"].strip() if head_res["code"] == 0 else "unborn"
+
+        tree_res = run_process(["git", "rev-parse", "HEAD^{tree}"], repo, 30, env=git_env(), max_output=None)
+        head_tree_sha = tree_res["stdout"].strip() if tree_res["code"] == 0 else ""
+
+        status_raw = git_raw(repo, "-c", "core.quotepath=false", "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    except Exception as exc:
+        raise ValueError("Failed to compute working tree provenance: %s" % exc) from exc
+
+    exclude_prefix = _relative_out(repo, exclude_dir)
+    tokens = status_raw.split("\0")
+    i = 0
+    entries: list[tuple[str, str, str, str]] = []
+
+    while i < len(tokens):
+        item = tokens[i]
+        if not item:
+            i += 1
+            continue
+        if len(item) < 3:
+            i += 1
+            continue
+        xy = item[:2]
+        path = item[3:]
+        i += 1
+        if xy.startswith("R") and i < len(tokens):
+            i += 1  # skip rename orig_path
+
+        if exclude_prefix:
+            if path == exclude_prefix or path.startswith(exclude_prefix + "/"):
+                continue
+
+        p = repo / path
+        try:
+            if p.is_symlink():
+                kind = "symlink"
+                target = os.readlink(p)
+                content_id = "target:" + sha256_text(target)
+            elif p.is_file():
+                kind = "file"
+                content_id = "sha256:" + sha256_file(p)
+            elif p.is_dir():
+                kind = "directory"
+                content_id = "dir"
+            else:
+                kind = "deleted"
+                content_id = "missing"
+        except (OSError, PermissionError) as exc:
+            raise ValueError("Failed to read working tree file '%s' for provenance: %s" % (path, exc)) from exc
+
+        entries.append((path, xy, kind, content_id))
+
+    def path_key(entry: tuple[str, str, str, str]) -> bytes:
+        return entry[0].encode("utf-8", "surrogateescape")
+
+    entries.sort(key=path_key)
+
+    def field(data: str | bytes) -> bytes:
+        raw = data.encode("utf-8", "surrogateescape") if isinstance(data, str) else data
+        return str(len(raw)).encode("ascii") + b":" + raw
+
+    stream = bytearray()
+    stream.extend(b"aqa-tree-v1\n")
+    stream.extend(b"head\n" + field(head_sha) + b"\n")
+    stream.extend(b"tree\n" + field(head_tree_sha) + b"\n")
+    for path, xy, kind, content_id in entries:
+        stream.extend(b"entry\n"
+                      + field(xy) + b"\n"
+                      + field(path) + b"\n"
+                      + field(kind) + b"\n"
+                      + field(content_id) + b"\n")
+
+    digest = hashlib.sha256(stream).hexdigest()
+    return {
+        "algorithm": "aqa-tree-v1",
+        "fingerprint": "aqa-tree-v1:" + digest,
+        "head_sha": head_sha,
+        "head_tree_sha": head_tree_sha,
+        "entry_count": len(entries),
+        "canonical_sha256": digest,
+    }
 
 
 # --------------------------------------------------------------------------- JSON schema (subset)
