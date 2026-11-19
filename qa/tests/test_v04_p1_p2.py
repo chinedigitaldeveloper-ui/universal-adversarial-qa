@@ -186,15 +186,43 @@ class WindowsSupportTests(unittest.TestCase):
         with patch("os.name", "nt"), patch.dict("os.environ", {"COMSPEC": "C:\\Windows\\system32\\cmd.exe"}):
             with patch("shutil.which", return_value="C:\\tools\\codex.cmd"):
                 resolved = resolve_argv_windows(["codex", "review"])
-                self.assertEqual(resolved, ["C:\\Windows\\system32\\cmd.exe", "/c", "C:\\tools\\codex.cmd", "review"])
+                self.assertEqual(resolved, 'C:\\Windows\\system32\\cmd.exe /d /s /c "C:\\tools\\codex.cmd review"')
 
             with patch("shutil.which", return_value="C:\\tools\\coderabbit.bat"):
                 resolved = resolve_argv_windows(["coderabbit", "--version"])
-                self.assertEqual(resolved, ["C:\\Windows\\system32\\cmd.exe", "/c", "C:\\tools\\coderabbit.bat", "--version"])
+                self.assertEqual(resolved, 'C:\\Windows\\system32\\cmd.exe /d /s /c "C:\\tools\\coderabbit.bat --version"')
 
             with patch("shutil.which", return_value="C:\\Git\\bin\\git.exe"):
                 resolved = resolve_argv_windows(["git", "status"])
                 self.assertEqual(resolved, ["C:\\Git\\bin\\git.exe", "status"])
+
+    def test_resolve_argv_windows_cmd_with_spaces_and_metacharacters(self):
+        with patch("os.name", "nt"), patch.dict("os.environ", {"COMSPEC": "C:\\Windows\\system32\\cmd.exe"}):
+            with patch("shutil.which", return_value="C:\\Program Files (x86)\\tools\\codex.cmd"):
+                cmd = resolve_argv_windows(["codex", "review", "--msg", "Fix: #35 with spaces", "--filter", "a & b | c < d > e ^ f %VAR%"])
+                # Must be a string starting with cmd.exe /d /s /c and outer double quotes
+                self.assertTrue(isinstance(cmd, str))
+                self.assertTrue(cmd.startswith('C:\\Windows\\system32\\cmd.exe /d /s /c "'))
+                self.assertTrue(cmd.endswith('"'))
+                # Path with spaces must be quoted inside
+                self.assertIn('"C:\\Program Files (x86)\\tools\\codex.cmd"', cmd)
+                # Argument with spaces must be quoted inside
+                self.assertIn('"Fix: #35 with spaces"', cmd)
+                # Argument with metacharacters must be quoted inside
+                self.assertIn('"a & b | c < d > e ^ f %VAR%"', cmd)
+
+    def test_degradation_detects_windows_execution_policy_and_sandbox_denials(self):
+        samples = [
+            "File C:\\tool.ps1 cannot be loaded because running scripts is disabled on this system.",
+            "Script execution prevented by execution policy: PSSecurityException UnauthorizedAccess",
+            "codex: sandbox error: failed to initialize sandbox: operation not permitted by sandbox",
+            "CodeRabbit CLI: execution policy denial when launching helper script",
+            "sandbox failure: cannot run in sandbox container",
+            "Process launch blocked by security policy"
+        ]
+        for line in samples:
+            reasons = rv.detect_degradation_in_stderr(line)
+            self.assertTrue(bool(reasons), f"Failed to detect degradation in: {line}")
 
     def test_scrubbed_env_windows_case_insensitivity_and_system_vars(self):
         win_env = {

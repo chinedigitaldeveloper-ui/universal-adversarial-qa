@@ -34,6 +34,8 @@ def fingerprint(source: str, file_name: str, title: str) -> str:
 
 DEGRADATION_PATTERNS = [
     re.compile(r"(?i)\b(rate\s*limit(ed)?|quota\s*exceeded|context\s*window\s*exceeded|maximum\s*context\s*length|token\s*limit\s*exceeded|model\s*fallback|response\s*truncated|partial\s*response)\b"),
+    re.compile(r"(?i)\b(sandbox\s*(error|failure|violation|denied|unavailable|disabled)|failed\s*to\s*(initialize|create)\s*sandbox|operation\s*not\s*permitted\s*by\s*sandbox|cannot\s*run\s*in\s*sandbox)\b"),
+    re.compile(r"(?i)\b(execution\s*policy\s*(denial|error|restriction|prevented)?|running\s*scripts\s*is\s*disabled|blocked\s*by\s*security\s*policy|pssecurityexception|unauthorizedaccess)\b"),
 ]
 
 

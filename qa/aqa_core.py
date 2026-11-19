@@ -196,7 +196,7 @@ def _tail(text: str, limit: int | None) -> tuple[str, bool]:
     return text[-limit:], True
 
 
-def resolve_argv_windows(argv: list[str]) -> list[str]:
+def resolve_argv_windows(argv: list[str]) -> list[str] | str:
     """On Windows, resolve .cmd / .bat / .exe shims and format for execution without shell injection."""
     if os.name != "nt" or not argv:
         return argv
@@ -205,7 +205,8 @@ def resolve_argv_windows(argv: list[str]) -> list[str]:
     lower = resolved.lower()
     if lower.endswith((".cmd", ".bat")):
         comspec = os.environ.get("COMSPEC", "cmd.exe")
-        return [comspec, "/c", resolved] + argv[1:]
+        inner = subprocess.list2cmdline([resolved] + argv[1:])
+        return f'{comspec} /d /s /c "{inner}"'
     if resolved != prog:
         return [resolved] + argv[1:]
     return argv
