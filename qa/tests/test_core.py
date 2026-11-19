@@ -15,14 +15,12 @@ def process_alive(pid: int) -> bool:
     try:
         state = Path("/proc/%d/stat" % pid).read_text().rsplit(")", 1)[1].split()[0]
         return state not in ("Z", "X")
-    except FileNotFoundError:
+    except (FileNotFoundError, OSError):
         pass
-    except OSError:
-        return True
     try:
         os.kill(pid, 0)
         return True
-    except ProcessLookupError:
+    except (ProcessLookupError, OSError):
         return False
 
 
@@ -93,7 +91,7 @@ class ProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = Path(tmp) / "child.pid"
             script = ("import subprocess,sys,time;"
-                      "p=subprocess.Popen(['sleep','60']);open(%r,'w').write(str(p.pid));time.sleep(60)" % str(pidfile))
+                      "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);open(%r,'w').write(str(p.pid));time.sleep(60)" % str(pidfile))
             started = time.monotonic()
             result = core.run_process([PY, "-c", script], Path(tmp), seconds=2)
             self.assertTrue(result["timed_out"])

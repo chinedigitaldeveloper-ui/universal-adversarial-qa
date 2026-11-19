@@ -65,9 +65,27 @@ def hermetic_path(tmp: Path, bindir: Path | None = None) -> str:
     base = tmp / "_sysbin"
     if not base.exists():
         base.mkdir()
-        (base / "git").symlink_to(shutil.which("git"))
+        git_exe = shutil.which("git")
+        if git_exe:
+            try:
+                (base / "git").symlink_to(git_exe)
+            except (OSError, NotImplementedError):
+                shutil.copy(git_exe, base / ("git.exe" if sys.platform == "win32" else "git"))
+            if sys.platform == "win32" and not (base / "git.exe").exists():
+                try:
+                    (base / "git.exe").symlink_to(git_exe)
+                except (OSError, NotImplementedError):
+                    shutil.copy(git_exe, base / "git.exe")
         for name in ("python", "python3"):
-            (base / name).symlink_to(PY)
+            try:
+                (base / name).symlink_to(PY)
+            except (OSError, NotImplementedError):
+                shutil.copy(PY, base / (f"{name}.exe" if sys.platform == "win32" else name))
+            if sys.platform == "win32" and not (base / f"{name}.exe").exists():
+                try:
+                    (base / f"{name}.exe").symlink_to(PY)
+                except (OSError, NotImplementedError):
+                    shutil.copy(PY, base / f"{name}.exe")
     parts = ([str(bindir)] if bindir else []) + [str(base)]
     return os.pathsep.join(parts)
 
@@ -122,7 +140,14 @@ sys.exit(2 if vulnerable else 0)
 
 def write_exe(path: Path, source: str) -> None:
     path.write_text(source, encoding="utf-8")
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    try:
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    except OSError:
+        pass
+    if sys.platform == "win32":
+        cmd_wrapper = f'@"{PY}" "%~dp0{path.name}" %*\n'
+        (path.parent / f"{path.name}.cmd").write_text(cmd_wrapper, encoding="utf-8")
+        (path.parent / f"{path.name}.bat").write_text(cmd_wrapper, encoding="utf-8")
 
 
 def fake_codex(bindir: Path, behavior: str = CODEX_CLEAN, version: str = "codex-cli 0.77.0", help_text: str = CODEX_HELP) -> None:
