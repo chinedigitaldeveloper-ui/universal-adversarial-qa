@@ -456,6 +456,145 @@ class WindowsSupportTests(unittest.TestCase):
             self.assertIn("%PATH%", received_args[1], "%PATH% was expanded when it should have been literal")
             self.assertIn("\n", received_args[1], "Newlines were truncated")
 
+    def test_cmd_shim_rejects_unmodeled_control_flow(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            # 1. Exit before command
+            shim_exit = base / "exit.cmd"
+            shim_exit.write_text(f'@echo off\r\nexit /b 1\r\nnode "%~dp0\\{cli_js.name}" %*\r\n', encoding="utf-8")
+            self.assertIsNone(unwrap_cmd_shim(str(shim_exit)))
+
+            # 2. Goto before command
+            shim_goto = base / "goto.cmd"
+            shim_goto.write_text(f'@echo off\r\ngoto :eof\r\nnode "%~dp0\\{cli_js.name}" %*\r\n', encoding="utf-8")
+            self.assertIsNone(unwrap_cmd_shim(str(shim_goto)))
+
+            # 3. Subroutine call before command
+            shim_call = base / "call.cmd"
+            shim_call.write_text(f'@echo off\r\ncall :sub\r\nnode "%~dp0\\{cli_js.name}" %*\r\n:sub\r\nexit /b 0\r\n', encoding="utf-8")
+            self.assertIsNone(unwrap_cmd_shim(str(shim_call)))
+
+            # 4. Tampered npm shim with injected exit directive
+            tampered_npm = base / "tampered.cmd"
+            tampered_npm.write_text(
+                '@ECHO off\r\n'
+                'GOTO start\r\n'
+                ':find_dp0\r\n'
+                'SET dp0=%~dp0\r\n'
+                'EXIT /b\r\n'
+                ':start\r\n'
+                'SETLOCAL\r\n'
+                'CALL :find_dp0\r\n'
+                'exit /b 1\r\n'
+                'IF EXIST "%dp0%\\node.exe" (\r\n'
+                '  SET "_prog=%dp0%\\node.exe"\r\n'
+                ') ELSE (\r\n'
+                '  SET "_prog=node"\r\n'
+                '  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n'
+                ')\r\n'
+                f'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\{cli_js.name}" %*\r\n',
+                encoding="utf-8"
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(tampered_npm)))
+
+    def test_cmd_shim_fails_closed_when_explicit_interpreter_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+            cli_py = base / "cli.py"
+            cli_py.write_text("print(1)", encoding="utf-8")
+
+            missing_node = base / "pinned_missing_node.exe"
+            shim_node = base / "pinned_node.cmd"
+            shim_node.write_text(f'@echo off\r\n"{missing_node}" "%~dp0\\{cli_js.name}" %*\r\n', encoding="utf-8")
+            # Must fail closed instead of silently falling back to whichever node is on PATH
+            self.assertIsNone(unwrap_cmd_shim(str(shim_node)))
+
+            missing_py = base / "pinned_missing_py.exe"
+            shim_py = base / "pinned_py.cmd"
+            shim_py.write_text(f'@echo off\r\n"{missing_py}" "%~dp0\\{cli_py.name}" %*\r\n', encoding="utf-8")
+            # Must fail closed instead of silently falling back to sys.executable
+            self.assertIsNone(unwrap_cmd_shim(str(shim_py)))
+
+    def test_cmd_shim_preserves_npm_pathext_resolution_semantics(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            dir1 = base / "dir1"
+            dir2 = base / "dir2"
+            dir1.mkdir()
+            dir2.mkdir()
+
+            node_js = dir1 / "node.js"
+            node_js.write_text("dummy", encoding="utf-8")
+            node_exe = dir2 / "node.exe"
+            node_exe.write_text("dummy", encoding="utf-8")
+
+            target_js = base / "tool.js"
+            target_js.write_text("console.log(1);", encoding="utf-8")
+
+            npm_cmd = base / "npm_shim.cmd"
+            npm_cmd.write_text(
+                '@ECHO off\r\n'
+                'GOTO start\r\n'
+                ':find_dp0\r\n'
+                'SET dp0=%~dp0\r\n'
+                'EXIT /b\r\n'
+                ':start\r\n'
+                'SETLOCAL\r\n'
+                'CALL :find_dp0\r\n'
+                'IF EXIST "%dp0%\\node.exe" (\r\n'
+                '  SET "_prog=%dp0%\\node.exe"\r\n'
+                ') ELSE (\r\n'
+                '  SET "_prog=node"\r\n'
+                '  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n'
+                ')\r\n'
+                f'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\{target_js.name}" %*\r\n',
+                encoding="utf-8"
+            )
+
+            test_path = f"{dir1}{os.pathsep}{dir2}"
+            with patch.dict(os.environ, {"PATH": test_path, "PATHEXT": ".COM;.EXE;.BAT;.CMD;.JS;.VBS"}):
+                unwrapped = unwrap_cmd_shim(str(npm_cmd))
+                self.assertIsNotNone(unwrapped)
+                # Must select node.exe from dir2 and skip node.js from dir1
+                self.assertEqual(os.path.normcase(unwrapped[0]), os.path.normcase(str(node_exe)))
+
+    def test_cmd_shim_rejects_unexpanded_variables_in_fixed_arguments(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            # 1. Unexpanded %APPDATA%
+            shim_appdata = base / "appdata.cmd"
+            shim_appdata.write_text(f'@node "%~dp0\\{cli_js.name}" --config=%APPDATA%\\tool.json %*\r\n', encoding="utf-8")
+            self.assertIsNone(unwrap_cmd_shim(str(shim_appdata)))
+
+            # 2. Unexpanded %TEMP%
+            shim_temp = base / "temp.cmd"
+            shim_temp.write_text(f'@node "%~dp0\\{cli_js.name}" %TEMP%\\cache %*\r\n', encoding="utf-8")
+            self.assertIsNone(unwrap_cmd_shim(str(shim_temp)))
+
+            # 3. Unexpanded %USERPROFILE% in direct executable
+            tool_exe = base / "tool.exe"
+            tool_exe.write_text("binary", encoding="utf-8")
+            shim_exe = base / "userprofile.cmd"
+            shim_exe.write_text(f'@"{tool_exe}" --profile=%USERPROFILE%\\prof %*\r\n', encoding="utf-8")
+            self.assertIsNone(unwrap_cmd_shim(str(shim_exe)))
+
+            # 4. Modeled %~dp0 in fixed flag is expanded safely and accepted
+            config_file = base / "config.json"
+            config_file.write_text("{}", encoding="utf-8")
+            shim_valid = base / "valid_modeled.cmd"
+            shim_valid.write_text(f'@node "%~dp0\\{cli_js.name}" --config="%~dp0\\{config_file.name}" %*\r\n', encoding="utf-8")
+            unwrapped = unwrap_cmd_shim(str(shim_valid))
+            self.assertIsNotNone(unwrapped)
+            self.assertEqual(unwrapped[2], f'--config={base}{os.sep}{config_file.name}')
+
     def test_degradation_detects_windows_execution_policy_and_sandbox_denials(self):
         samples = [
             "File C:\\tool.ps1 cannot be loaded because running scripts is disabled on this system.",
