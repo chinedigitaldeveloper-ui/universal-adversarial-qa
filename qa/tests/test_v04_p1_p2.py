@@ -1227,6 +1227,21 @@ class WindowsSupportTests(unittest.TestCase):
             )
             self.assertIsNone(unwrap_cmd_shim(str(evil_cmd3)))
 
+            # 4. Negative tests: whitespace inside quotes altering variable name or value
+            for bad_set in (
+                'set " dp0=%~dp0"',
+                'set "dp0=%~dp0 "',
+                'set "dp0 =%~dp0"',
+                'set "dp0= %~dp0"',
+                'set "  dp0=%~dp0  "',
+            ):
+                bad_cmd = base / "bad_ws.cmd"
+                bad_cmd.write_text(
+                    f'@echo off\r\n{bad_set}\r\nnode "%dp0%\\{cli_js.name}" %*\r\n',
+                    encoding="utf-8",
+                )
+                self.assertIsNone(unwrap_cmd_shim(str(bad_cmd)))
+
             # 4. Positive test: unquoted exact `set dp0=%~dp0`
             valid_cmd1 = base / "valid1.cmd"
             valid_cmd1.write_text(

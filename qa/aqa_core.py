@@ -690,9 +690,7 @@ def unwrap_cmd_shim(cmd_path: str, env: dict[str, str] | None = None) -> list[st
         # Environment mutations: only harmless exact dp0 definition allowed
         if clean_lower.startswith("set "):
             var_assign = clean_lower[4:].strip()
-            if var_assign.startswith('"') and var_assign.endswith('"'):
-                var_assign = var_assign[1:-1].strip()
-            if var_assign == "dp0=%~dp0":
+            if var_assign in ("dp0=%~dp0", '"dp0=%~dp0"'):
                 continue
             return None
 
