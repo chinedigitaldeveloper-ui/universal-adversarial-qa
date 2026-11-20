@@ -817,13 +817,18 @@ class WindowsSupportTests(unittest.TestCase):
             sibling_node = base / "node.exe"
             sibling_node.write_text("binary", encoding="utf-8")
 
-            def make_custom_npm(if_cond: str, if_body: str, else_body: str) -> Path:
-                shim = base / f"custom_{abs(hash((if_cond, if_body, else_body)))}.cmd"
+            def make_custom_npm(
+                if_cond: str,
+                if_body: str,
+                else_body: str,
+                find_dp0_line: str = "SET dp0=%~dp0",
+            ) -> Path:
+                shim = base / f"custom_{abs(hash((if_cond, if_body, else_body, find_dp0_line)))}.cmd"
                 content = (
                     "@ECHO off\r\n"
                     "GOTO start\r\n"
                     ":find_dp0\r\n"
-                    "SET dp0=%~dp0\r\n"
+                    f"{find_dp0_line}\r\n"
                     "EXIT /b\r\n"
                     ":start\r\n"
                     "SETLOCAL\r\n"
@@ -898,6 +903,39 @@ class WindowsSupportTests(unittest.TestCase):
                 'SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.EXE;=;%',
             )
             self.assertIsNone(unwrap_cmd_shim(str(s8)))
+
+            # 9. Trailing whitespace or tabs on find_dp0 assignment
+            for bad_find_dp0 in (
+                "SET dp0=%~dp0  ",
+                "SET dp0=%~dp0\t",
+                'SET "dp0=%~dp0"  ',
+                'SET "dp0=%~dp0"\t',
+                'SET " dp0=%~dp0"',
+                'SET "dp0=%~dp0 "',
+            ):
+                s9 = make_custom_npm(std_if_cond, std_if_body, std_else_body, find_dp0_line=bad_find_dp0)
+                self.assertIsNone(unwrap_cmd_shim(str(s9)))
+
+            # 10. Trailing or internal whitespace on IF branch _prog
+            for bad_if_body in (
+                'SET "_prog=%dp0%\\node.exe"  ',
+                'SET "_prog=%dp0%\\node.exe"\t',
+                'SET "_prog=%dp0%\\node.exe "',
+                'SET "_prog= %dp0%\\node.exe"',
+            ):
+                s10 = make_custom_npm(std_if_cond, bad_if_body, std_else_body)
+                self.assertIsNone(unwrap_cmd_shim(str(s10)))
+
+            # 11. Trailing or internal whitespace on ELSE branch _prog and PATHEXT
+            for bad_else_body in (
+                'SET "_prog=node"  \r\n  SET PATHEXT=%PATHEXT:;.JS;=;%',
+                'SET "_prog=node"\t\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%',
+                'SET "_prog=node "\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%',
+                'SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%  ',
+                'SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\t',
+            ):
+                s11 = make_custom_npm(std_if_cond, std_if_body, bad_else_body)
+                self.assertIsNone(unwrap_cmd_shim(str(s11)))
 
     def test_p2_child_environment_resolution(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1227,13 +1265,18 @@ class WindowsSupportTests(unittest.TestCase):
             )
             self.assertIsNone(unwrap_cmd_shim(str(evil_cmd3)))
 
-            # 4. Negative tests: whitespace inside quotes altering variable name or value
+            # 4. Negative tests: whitespace inside quotes or trailing spaces/tabs altering variable value
             for bad_set in (
                 'set " dp0=%~dp0"',
                 'set "dp0=%~dp0 "',
                 'set "dp0 =%~dp0"',
                 'set "dp0= %~dp0"',
                 'set "  dp0=%~dp0  "',
+                'set dp0=%~dp0  ',
+                'set dp0=%~dp0\t',
+                'set dp0=%~dp0 \t ',
+                'set "dp0=%~dp0"  ',
+                'set "dp0=%~dp0"\t',
             ):
                 bad_cmd = base / "bad_ws.cmd"
                 bad_cmd.write_text(

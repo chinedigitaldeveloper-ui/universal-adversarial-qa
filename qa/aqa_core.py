@@ -402,8 +402,10 @@ def _expand_fixed_arg(arg: str, cmd_dir: str) -> str | None:
 def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str] | None = None) -> list[str] | None:
     """Validate and unwrap the exact genuine npm cmd-shim template and its reachable path."""
     clean = []
+    clean_raw = []
     for line in raw_lines:
-        s = line.strip()
+        line_no_crlf = line.rstrip("\r\n")
+        s = line_no_crlf.strip()
         if not s:
             continue
         l = s.lower()
@@ -412,6 +414,7 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str]
                 return None
             continue
         clean.append(s)
+        clean_raw.append(line_no_crlf)
 
     if not clean:
         return None
@@ -429,8 +432,11 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str]
         return None
     if clean[idx + 1].lower() != ":find_dp0":
         return None
-    set_dp0 = clean[idx + 2].lower().lstrip("@").strip()
-    if set_dp0 not in ("set dp0=%~dp0", 'set "dp0=%~dp0"'):
+    raw_dp0 = clean_raw[idx + 2].lstrip(" \t@")
+    if not raw_dp0.lower().startswith("set"):
+        return None
+    var_assign_dp0 = raw_dp0[3:].lstrip(" \t")
+    if var_assign_dp0.lower() not in ("dp0=%~dp0", '"dp0=%~dp0"'):
         return None
     if clean[idx + 3].lower().strip() != "exit /b":
         return None
@@ -444,6 +450,7 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str]
     idx += 7
 
     middle = clean[idx:-1]
+    middle_raw = clean_raw[idx:-1]
     if not middle:
         return None
 
@@ -453,7 +460,7 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str]
     pathext_subst: str | None = None
     state = "OUTSIDE"
 
-    for mline in middle:
+    for raw_m, mline in zip(middle_raw, middle):
         mlower = mline.lower().strip()
         if any(ch in mline for ch in ("&", "|", "<", ">", "^")):
             return None
@@ -485,19 +492,25 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str]
             return None
 
         elif state == "IN_IF":
-            if mlower.startswith("set "):
+            if mlower.startswith(("set ", "set\t", "set\"")):
                 if has_set_prog_sibling:
                     return None
-                var = mlower[4:].strip().strip('"')
-                if var.startswith("_prog="):
-                    val = var[len("_prog="):].strip().strip('"\'')
+                raw_set = raw_m.lstrip(" \t@")
+                if not raw_set.lower().startswith("set"):
+                    return None
+                var_raw = raw_set[3:].lstrip(" \t")
+                if not (var_raw.startswith('"') and var_raw.endswith('"')):
+                    return None
+                var = var_raw[1:-1]
+                if var.lower().startswith("_prog="):
+                    val = var[len("_prog="):]
                     val_norm = val.replace("/", "\\")
                     expected_sibling = (
                         os.path.join(cmd_dir, "node.exe").lower().replace("/", "\\")
                     )
                     if (
-                        val_norm in ("%dp0%\\node.exe", "%~dp0\\node.exe")
-                        or val_norm == expected_sibling
+                        val_norm.lower() in ("%dp0%\\node.exe", "%~dp0\\node.exe")
+                        or val_norm.lower() == expected_sibling
                     ):
                         has_set_prog_sibling = True
                         continue
@@ -526,24 +539,29 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str]
             return None
 
         elif state == "IN_ELSE":
-            if mlower.startswith("set "):
-                var = mlower[4:].strip().strip('"')
-                if var.startswith("_prog="):
-                    if has_set_prog_node:
-                        return None
-                    val = var[len("_prog="):].strip().strip('"\'')
-                    if val == "node":
-                        has_set_prog_node = True
-                        continue
+            if mlower.startswith(("set ", "set\t", "set\"")):
+                raw_set = raw_m.lstrip(" \t@")
+                if not raw_set.lower().startswith("set"):
                     return None
-                if var.startswith("pathext="):
+                var_raw = raw_set[3:].lstrip(" \t")
+                if var_raw.lower().startswith("pathext="):
                     if pathext_subst is not None:
                         return None
-                    val = var[len("pathext="):].strip().strip('"\'')
-                    if val.replace(" ", "") == "%pathext:;.js;=;%":
-                        pathext_subst = val
-                        continue
-                    return None
+                    val_raw = var_raw[len("pathext="):]
+                    if val_raw.lower() != "%pathext:;.js;=;%":
+                        return None
+                    pathext_subst = val_raw
+                    continue
+                if var_raw.startswith('"') and var_raw.endswith('"'):
+                    var = var_raw[1:-1]
+                    if var.lower().startswith("_prog="):
+                        if has_set_prog_node:
+                            return None
+                        val = var[len("_prog="):]
+                        if val.lower() == "node":
+                            has_set_prog_node = True
+                            continue
+                        return None
                 return None
             if mlower == ")":
                 state = "DONE"
@@ -660,7 +678,8 @@ def unwrap_cmd_shim(cmd_path: str, env: dict[str, str] | None = None) -> list[st
     command_lines: list[str] = []
 
     for line in raw_lines:
-        stripped = line.strip()
+        line_no_crlf = line.rstrip("\r\n")
+        stripped = line_no_crlf.strip()
         if not stripped:
             continue
         lower = stripped.lower()
@@ -688,9 +707,15 @@ def unwrap_cmd_shim(cmd_path: str, env: dict[str, str] | None = None) -> list[st
             continue
 
         # Environment mutations: only harmless exact dp0 definition allowed
-        if clean_lower.startswith("set "):
-            var_assign = clean_lower[4:].strip()
-            if var_assign in ("dp0=%~dp0", '"dp0=%~dp0"'):
+        if (
+            clean_lower.startswith(("set ", "set\t", "set\"", "set/", "set="))
+            or clean_lower == "set"
+        ):
+            raw_clean = line_no_crlf.lstrip(" \t@")
+            if not raw_clean.lower().startswith("set"):
+                return None
+            var_assign = raw_clean[3:].lstrip(" \t")
+            if var_assign.lower() in ("dp0=%~dp0", '"dp0=%~dp0"'):
                 continue
             return None
 
