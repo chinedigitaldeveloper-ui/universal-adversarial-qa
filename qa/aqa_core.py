@@ -594,7 +594,7 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str]
         return None
 
     tokens = split_cmd_tokens(cmd_part)
-    if not tokens or tokens[-1] not in ("%*", '"%*"'):
+    if not tokens or tokens[-1] != "%*":
         return None
 
     prog_tok = tokens[0].strip("\"'").lower()
@@ -712,10 +712,7 @@ def unwrap_cmd_shim(cmd_path: str, env: dict[str, str] | None = None) -> list[st
         return None
 
     tokens = split_cmd_tokens(cmd_part)
-    if not tokens:
-        return None
-
-    if tokens[-1] not in ("%*", '"%*"'):
+    if not tokens or tokens[-1] != "%*":
         return None
 
     call_tokens = tokens[:-1]

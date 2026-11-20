@@ -1067,6 +1067,135 @@ class WindowsSupportTests(unittest.TestCase):
             direct_cmd.write_text('@"%~dp0\\node.cmd" %*\r\n', encoding="utf-8")
             self.assertIsNone(unwrap_cmd_shim(str(direct_cmd)))
 
+    def test_p2_npm_quoted_forwarding_rejected(self):
+        """Test A: npm template ending with quoted forwarding is rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            npm_quoted = base / "npm_quoted.cmd"
+            npm_quoted.write_text(
+                "@ECHO off\r\n"
+                "GOTO start\r\n"
+                ":find_dp0\r\n"
+                "SET dp0=%~dp0\r\n"
+                "EXIT /b\r\n"
+                ":start\r\n"
+                "SETLOCAL\r\n"
+                "CALL :find_dp0\r\n"
+                'IF EXIST "%dp0%\\node.exe" (\r\n'
+                '  SET "_prog=%dp0%\\node.exe"\r\n'
+                ") ELSE (\r\n"
+                '  SET "_prog=node"\r\n'
+                "  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+                ")\r\n"
+                "endLocal & goto #_undefined_# 2>NUL || "
+                f'title %COMSPEC% & "%_prog%" "%dp0%\\{cli_js.name}" "%*"\r\n',
+                encoding="utf-8",
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(npm_quoted)))
+
+            npm_single = base / "npm_single.cmd"
+            npm_single.write_text(
+                "@ECHO off\r\n"
+                "GOTO start\r\n"
+                ":find_dp0\r\n"
+                "SET dp0=%~dp0\r\n"
+                "EXIT /b\r\n"
+                ":start\r\n"
+                "SETLOCAL\r\n"
+                "CALL :find_dp0\r\n"
+                'IF EXIST "%dp0%\\node.exe" (\r\n'
+                '  SET "_prog=%dp0%\\node.exe"\r\n'
+                ") ELSE (\r\n"
+                '  SET "_prog=node"\r\n'
+                "  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+                ")\r\n"
+                "endLocal & goto #_undefined_# 2>NUL || "
+                f"title %COMSPEC% & \"%_prog%\" \"%dp0%\\{cli_js.name}\" '%*'\r\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(npm_single)))
+
+    def test_p2_straight_line_quoted_forwarding_rejected(self):
+        """Test B: straight-line .cmd wrapper ending with quoted forwarding is rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            straight_quoted = base / "straight_quoted.cmd"
+            straight_quoted.write_text(
+                f'@node "%~dp0\\{cli_js.name}" "%*"\r\n', encoding="utf-8"
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(straight_quoted)))
+
+            straight_single = base / "straight_single.cmd"
+            straight_single.write_text(
+                f"@node \"%~dp0\\{cli_js.name}\" '%*'\r\n", encoding="utf-8"
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(straight_single)))
+
+            direct_exe = base / "tool.exe"
+            direct_exe.write_text("dummy", encoding="utf-8")
+            direct_quoted = base / "direct_quoted.cmd"
+            direct_quoted.write_text(
+                f'@"{direct_exe}" "%*"\r\n', encoding="utf-8"
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(direct_quoted)))
+
+    def test_p2_unquoted_forwarding_preserved(self):
+        """Test C: unquoted %* wrappers remain supported and preserve separate arguments."""
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            valid_cmd = base / "tool.cmd"
+            valid_cmd.write_text(
+                f'@node "%~dp0\\{cli_js.name}" %*\r\n', encoding="utf-8"
+            )
+            unwrapped = unwrap_cmd_shim(str(valid_cmd))
+            self.assertIsNotNone(unwrapped)
+
+            caller_args = ["one", "two", "line 1\nline 2", "with spaces and 'quotes'"]
+            with patch("os.name", "nt"):
+                resolved = resolve_argv_windows([str(valid_cmd)] + caller_args)
+            self.assertEqual(len(resolved), len(unwrapped) + len(caller_args))
+            self.assertEqual(resolved[: len(unwrapped)], unwrapped)
+            self.assertEqual(resolved[len(unwrapped) :], caller_args)
+
+    def test_p2_quoted_forwarding_fail_closed_propagation(self):
+        """Test D: rejected quoted forwarding produces UnsupportedShimError and exit code 126."""
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            quoted_cmd = base / "tool.cmd"
+            quoted_cmd.write_text(
+                f'@node "%~dp0\\{cli_js.name}" "%*"\r\n', encoding="utf-8"
+            )
+
+            with patch("os.name", "nt"):
+                with self.assertRaises(UnsupportedShimError) as ctx:
+                    resolve_argv_windows([str(quoted_cmd), "one", "two"])
+                self.assertIn("cannot safely execute Windows batch shim", str(ctx.exception))
+                self.assertIn(str(quoted_cmd), str(ctx.exception))
+
+                with patch("subprocess.Popen") as mock_popen:
+                    res = run_process([str(quoted_cmd), "one", "two"], cwd=base)
+                    self.assertEqual(res["code"], 126)
+                    self.assertIn("cannot safely execute Windows batch shim", res["stderr"])
+                    mock_popen.assert_not_called()
+
+                with patch("subprocess.Popen") as mock_popen_bounded:
+                    res_bounded = run_process_bounded([str(quoted_cmd), "one", "two"], cwd=base)
+                    self.assertEqual(res_bounded["code"], 126)
+                    self.assertIn("cannot safely execute Windows batch shim", res_bounded["stderr"])
+                    mock_popen_bounded.assert_not_called()
+
 
 class EvidenceIntegrityAndP2Tests(Harness):
     def test_artifact_hashes_recorded_post_redaction(self):
