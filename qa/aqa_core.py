@@ -266,15 +266,67 @@ def apply_cmd_var_subst(val: str, subst_expr: str) -> str:
     return val
 
 
-def resolve_executable_with_pathext(name: str, pathext: str | None = None, path: str | None = None) -> str | None:
-    """Resolve an executable on PATH respecting modified or explicit PATHEXT semantics."""
+NON_NATIVE_EXTENSIONS = (
+    ".cmd", ".bat", ".js", ".cjs", ".mjs", ".jse", ".vbs", ".vbe",
+    ".wsf", ".wsh", ".ps1",
+)
+
+
+def _get_env_path_and_pathext(env: dict[str, str] | None) -> tuple[str, str]:
+    """Extract PATH and PATHEXT from env, respecting Windows case-insensitivity.
+
+    If env is provided, strictly uses the child environment's values and does NOT
+    fall back to the parent process PATH.
+    """
+    lookup_path: str | None = None
+    lookup_pathext: str | None = None
+
+    if env is not None:
+        for k, v in env.items():
+            k_lower = k.lower()
+            if k_lower == "path" and lookup_path is None:
+                lookup_path = v
+            elif k_lower == "pathext" and lookup_pathext is None:
+                lookup_pathext = v
+        if lookup_path is None:
+            lookup_path = ""
+        if lookup_pathext is None:
+            lookup_pathext = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
+    else:
+        lookup_path = os.environ.get("PATH", "")
+        lookup_pathext = os.environ.get(
+            "PATHEXT", ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
+        )
+
+    return lookup_path, lookup_pathext
+
+
+def resolve_executable_with_pathext(
+    name: str,
+    pathext: str | None = None,
+    path: str | None = None,
+    native_only: bool = False,
+) -> str | None:
+    """Resolve an executable on PATH respecting modified or explicit PATHEXT semantics.
+
+    If native_only is True, non-native launchers (.cmd, .bat, scripts) are rejected,
+    ensuring only directly executable native binaries are returned.
+    """
     if path is None:
         path = os.environ.get("PATH", "")
     dirs = [d for d in path.split(os.pathsep) if d]
 
     if pathext is None:
-        pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC")
+        pathext = os.environ.get(
+            "PATHEXT", ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
+        )
     exts = [e.strip() for e in pathext.split(";") if e.strip()]
+    if native_only:
+        exts = [e for e in exts if e.lower() not in NON_NATIVE_EXTENSIONS]
+        if sys.platform == "win32":
+            exts = [e for e in exts if e.lower() in (".exe", ".com")]
+            if not exts:
+                exts = [".exe", ".com"]
 
     name_lower = name.lower()
     has_ext = any(name_lower.endswith(e.lower()) for e in exts)
@@ -282,18 +334,41 @@ def resolve_executable_with_pathext(name: str, pathext: str | None = None, path:
     for d in dirs:
         if has_ext:
             cand = os.path.join(d, name)
-            if os.path.isfile(cand) and (os.access(cand, os.X_OK) or os.name == "nt" or cand.lower().endswith((".exe", ".cmd", ".bat"))):
-                return cand
+            if os.path.isfile(cand):
+                cand_lower = cand.lower()
+                if native_only and cand_lower.endswith(NON_NATIVE_EXTENSIONS):
+                    continue
+                if (
+                    os.access(cand, os.X_OK)
+                    or os.name == "nt"
+                    or cand_lower.endswith((".exe", ".cmd", ".bat"))
+                ):
+                    return cand
         else:
             for ext in exts:
                 for candidate_ext in (ext, ext.lower()):
                     cand = os.path.join(d, name + candidate_ext)
-                    if os.path.isfile(cand) and (os.access(cand, os.X_OK) or os.name == "nt" or cand.lower().endswith((".exe", ".cmd", ".bat"))):
-                        return cand
+                    if os.path.isfile(cand):
+                        cand_lower = cand.lower()
+                        if native_only and cand_lower.endswith(NON_NATIVE_EXTENSIONS):
+                            continue
+                        if (
+                            os.access(cand, os.X_OK)
+                            or os.name == "nt"
+                            or cand_lower.endswith((".exe", ".cmd", ".bat"))
+                        ):
+                            return cand
 
     found = shutil.which(name, path=path)
     if found:
         f_ext = os.path.splitext(found)[1].lower()
+        if native_only:
+            if f_ext in NON_NATIVE_EXTENSIONS:
+                return None
+            if sys.platform == "win32" and f_ext not in (".exe", ".com"):
+                return None
+            if f_ext and f_ext not in (".exe", ".com"):
+                return None
         if not f_ext or any(f_ext == e.lower() for e in exts):
             return found
     return None
@@ -324,7 +399,7 @@ def _expand_fixed_arg(arg: str, cmd_dir: str) -> str | None:
     return expanded
 
 
-def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str) -> list[str] | None:
+def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str] | None = None) -> list[str] | None:
     """Validate and unwrap the exact genuine npm cmd-shim template and its reachable path."""
     clean = []
     for line in raw_lines:
@@ -384,13 +459,23 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str) -> list[str] | None
             return None
 
         if state == "OUTSIDE":
-            if mlower.startswith("if exist") and "node.exe" in mlower and "%dp0%" in mlower:
-                has_if_exist_node = True
-                if mlower.endswith("("):
-                    state = "IN_IF"
-                else:
-                    state = "EXPECT_IF_OPEN"
-                continue
+            if mlower.startswith("if exist "):
+                cond_part = mlower[len("if exist "):].strip()
+                has_open = False
+                if cond_part.endswith("("):
+                    has_open = True
+                    cond_part = cond_part[:-1].strip()
+                cond_target = cond_part.strip("\"'").replace("/", "\\")
+                expected_target = (
+                    os.path.join(cmd_dir, "node.exe").lower().replace("/", "\\")
+                )
+                if (
+                    cond_target in ("%dp0%\\node.exe", "%~dp0\\node.exe")
+                    or cond_target == expected_target
+                ):
+                    has_if_exist_node = True
+                    state = "IN_IF" if has_open else "EXPECT_IF_OPEN"
+                    continue
             return None
 
         elif state == "EXPECT_IF_OPEN":
@@ -401,14 +486,22 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str) -> list[str] | None
 
         elif state == "IN_IF":
             if mlower.startswith("set "):
+                if has_set_prog_sibling:
+                    return None
                 var = mlower[4:].strip().strip('"')
-                if (
-                    var.startswith("_prog=")
-                    and ("%dp0%" in var or cmd_dir.lower() in var)
-                    and "node.exe" in var
-                ):
-                    has_set_prog_sibling = True
-                    continue
+                if var.startswith("_prog="):
+                    val = var[len("_prog="):].strip().strip('"\'')
+                    val_norm = val.replace("/", "\\")
+                    expected_sibling = (
+                        os.path.join(cmd_dir, "node.exe").lower().replace("/", "\\")
+                    )
+                    if (
+                        val_norm in ("%dp0%\\node.exe", "%~dp0\\node.exe")
+                        or val_norm == expected_sibling
+                    ):
+                        has_set_prog_sibling = True
+                        continue
+                    return None
                 return None
             if mlower in (") else (", ") else"):
                 if not has_set_prog_sibling:
@@ -435,12 +528,22 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str) -> list[str] | None
         elif state == "IN_ELSE":
             if mlower.startswith("set "):
                 var = mlower[4:].strip().strip('"')
-                if var.startswith("_prog=") and var.endswith("node"):
-                    has_set_prog_node = True
-                    continue
+                if var.startswith("_prog="):
+                    if has_set_prog_node:
+                        return None
+                    val = var[len("_prog="):].strip().strip('"\'')
+                    if val == "node":
+                        has_set_prog_node = True
+                        continue
+                    return None
                 if var.startswith("pathext="):
-                    pathext_subst = var[8:].strip()
-                    continue
+                    if pathext_subst is not None:
+                        return None
+                    val = var[len("pathext="):].strip().strip('"\'')
+                    if val.replace(" ", "") == "%pathext:;.js;=;%":
+                        pathext_subst = val
+                        continue
+                    return None
                 return None
             if mlower == ")":
                 state = "DONE"
@@ -456,29 +559,38 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str) -> list[str] | None
         return None
 
     sibling_node = os.path.join(cmd_dir, "node.exe")
-    if os.path.isfile(sibling_node):
+    if os.path.isfile(sibling_node) and sibling_node.lower().endswith(".exe"):
         node_bin = sibling_node
     else:
-        curr_pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC")
-        effective_pathext = apply_cmd_var_subst(curr_pathext, pathext_subst)
-        node_bin = resolve_executable_with_pathext("node", pathext=effective_pathext)
-        if not node_bin or not os.path.isfile(node_bin):
+        lookup_path, lookup_pathext = _get_env_path_and_pathext(env)
+        effective_pathext = apply_cmd_var_subst(lookup_pathext, pathext_subst)
+        node_bin = resolve_executable_with_pathext(
+            "node", pathext=effective_pathext, path=lookup_path, native_only=True
+        )
+        if (
+            not node_bin
+            or not os.path.isfile(node_bin)
+            or node_bin.lower().endswith(NON_NATIVE_EXTENSIONS)
+        ):
             return None
 
-    inv_line = clean[-1]
-    inv_lower = inv_line.lower()
-    if "title %comspec% &" in inv_lower:
-        pos = inv_lower.index("title %comspec% &") + len("title %comspec% &")
-        cmd_part = inv_line[pos:].strip()
-    elif "goto #_undefined_# 2>nul ||" in inv_lower:
-        pos = inv_lower.index("goto #_undefined_# 2>nul ||") + len("goto #_undefined_# 2>nul ||")
-        cmd_part = inv_line[pos:].strip()
-    elif inv_line.startswith("@"):
-        cmd_part = inv_line[1:].strip()
-    else:
-        cmd_part = inv_line.strip()
+    inv_line = clean[-1].strip()
+    if inv_line.startswith("@"):
+        inv_line = inv_line[1:].strip()
 
-    if any(ch in cmd_part for ch in ("<", ">", "|", "&")):
+    prefix_match = re.match(
+        r"^(?:endlocal\s*&\s*goto\s*#_undefined_#\s*2>nul\s*\|\|\s*)?title\s*%comspec%\s*&\s*",
+        inv_line,
+        re.IGNORECASE,
+    )
+    if not prefix_match:
+        return None
+
+    cmd_part = inv_line[prefix_match.end():].strip()
+    if cmd_part.startswith("@"):
+        cmd_part = cmd_part[1:].strip()
+
+    if any(ch in cmd_part for ch in ("<", ">", "|", "&", "^")):
         return None
 
     tokens = split_cmd_tokens(cmd_part)
@@ -513,7 +625,7 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str) -> list[str] | None
     return [node_bin] + [f for f in pre_flags if f is not None] + [cand_js] + [f for f in post_flags if f is not None]
 
 
-def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
+def unwrap_cmd_shim(cmd_path: str, env: dict[str, str] | None = None) -> list[str] | None:
     """Detect and verify if a Windows .cmd/.bat shim wraps a direct executable, Node.js script, or Python script.
 
     Only returns [executable, ...fixed_args] if the shim's invocation statement and target can be verified
@@ -535,7 +647,7 @@ def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
         return None
 
     # 1. Try exact validated npm template first
-    npm_result = _unwrap_npm_template(raw_lines, cmd_dir)
+    npm_result = _unwrap_npm_template(raw_lines, cmd_dir, env=env)
     if npm_result is not None:
         return npm_result
 
@@ -612,21 +724,35 @@ def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
     prog_lower = prog_token.lower().strip("\"'")
 
     is_explicit = any(sep in prog_token for sep in ("\\", "/")) or prog_token.startswith("%")
+    lookup_path, lookup_pathext = _get_env_path_and_pathext(env)
 
     # A. Node.js wrapper
-    if prog_lower in ("node", "node.exe") or prog_lower.endswith(("\\node.exe", "/node.exe")):
+    if (
+        prog_lower in ("node", "node.exe")
+        or prog_lower.endswith(("\\node.exe", "/node.exe"))
+    ):
         if is_explicit:
             cand = expand_token(prog_token)
-            if not os.path.isfile(cand):
-                return None  # Fail closed when explicit interpreter is missing
+            if not os.path.isfile(cand) or cand.lower().endswith(
+                NON_NATIVE_EXTENSIONS
+            ):
+                return None  # Fail closed when explicit interpreter missing/non-native
             node_bin = cand
         else:
-            resolved = resolve_executable_with_pathext("node")
-            if not resolved or not os.path.isfile(resolved):
+            resolved = resolve_executable_with_pathext(
+                "node", pathext=lookup_pathext, path=lookup_path, native_only=True
+            )
+            if (
+                not resolved
+                or not os.path.isfile(resolved)
+                or resolved.lower().endswith(NON_NATIVE_EXTENSIONS)
+            ):
                 return None
             node_bin = resolved
 
-        js_indices = [i for i, t in enumerate(remaining) if _is_node_script(expand_token(t))]
+        js_indices = [
+            i for i, t in enumerate(remaining) if _is_node_script(expand_token(t))
+        ]
         if len(js_indices) != 1:
             return None
         idx = js_indices[0]
@@ -639,22 +765,45 @@ def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
         post_flags = [_expand_fixed_arg(t, cmd_dir) for t in post_raw]
         if any(t is None for t in pre_flags + post_flags):
             return None
-        return [node_bin] + [f for f in pre_flags if f is not None] + [cand_js] + [f for f in post_flags if f is not None]
+        return (
+            [node_bin]
+            + [f for f in pre_flags if f is not None]
+            + [cand_js]
+            + [f for f in post_flags if f is not None]
+        )
 
     # B. Python wrapper
     if "python" in os.path.basename(prog_lower):
         if is_explicit:
             cand_py = expand_token(prog_token)
-            if not os.path.isfile(cand_py):
-                return None  # Fail closed when explicit interpreter is missing
+            if not os.path.isfile(cand_py) or cand_py.lower().endswith(
+                NON_NATIVE_EXTENSIONS
+            ):
+                return None  # Fail closed when explicit interpreter missing/non-native
             py_bin = cand_py
         else:
-            resolved = resolve_executable_with_pathext("python") or (sys.executable if "python" in sys.executable.lower() else None)
-            if not resolved or not os.path.isfile(resolved):
+            resolved = resolve_executable_with_pathext(
+                "python", pathext=lookup_pathext, path=lookup_path, native_only=True
+            )
+            if (
+                not resolved
+                and env is None
+                and "python" in sys.executable.lower()
+                and os.path.isfile(sys.executable)
+                and not sys.executable.lower().endswith(NON_NATIVE_EXTENSIONS)
+            ):
+                resolved = sys.executable
+            if (
+                not resolved
+                or not os.path.isfile(resolved)
+                or resolved.lower().endswith(NON_NATIVE_EXTENSIONS)
+            ):
                 return None
             py_bin = resolved
 
-        py_indices = [i for i, t in enumerate(remaining) if _is_python_script(expand_token(t))]
+        py_indices = [
+            i for i, t in enumerate(remaining) if _is_python_script(expand_token(t))
+        ]
         if len(py_indices) != 1:
             return None
         idx = py_indices[0]
@@ -667,13 +816,35 @@ def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
         post_flags = [_expand_fixed_arg(t, cmd_dir) for t in post_raw]
         if any(t is None for t in pre_flags + post_flags):
             return None
-        return [py_bin] + [f for f in pre_flags if f is not None] + [cand_script] + [f for f in post_flags if f is not None]
+        return (
+            [py_bin]
+            + [f for f in pre_flags if f is not None]
+            + [cand_script]
+            + [f for f in post_flags if f is not None]
+        )
 
     # C. Direct executable
     if prog_lower.endswith(".exe"):
-        cand_exe = expand_token(prog_token)
-        if not os.path.isfile(cand_exe) or cand_exe.lower() == os.path.abspath(cmd_path).lower():
-            return None
+        if is_explicit:
+            cand_exe = expand_token(prog_token)
+            if (
+                not os.path.isfile(cand_exe)
+                or cand_exe.lower() == os.path.abspath(cmd_path).lower()
+                or cand_exe.lower().endswith(NON_NATIVE_EXTENSIONS)
+            ):
+                return None
+        else:
+            resolved = resolve_executable_with_pathext(
+                prog_token, pathext=lookup_pathext, path=lookup_path, native_only=True
+            )
+            if (
+                not resolved
+                or not os.path.isfile(resolved)
+                or resolved.lower() == os.path.abspath(cmd_path).lower()
+                or resolved.lower().endswith(NON_NATIVE_EXTENSIONS)
+            ):
+                return None
+            cand_exe = resolved
         fixed = [_expand_fixed_arg(t, cmd_dir) for t in remaining]
         if any(t is None for t in fixed):
             return None
@@ -682,7 +853,9 @@ def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
     return None
 
 
-def resolve_argv_windows(argv: list[str]) -> list[str]:
+def resolve_argv_windows(
+    argv: list[str], env: dict[str, str] | None = None
+) -> list[str]:
     """On Windows, resolve .cmd / .bat shims into direct executable arguments without shell injection.
 
     Raises UnsupportedShimError if the wrapper cannot be safely verified and unwrapped.
@@ -690,10 +863,15 @@ def resolve_argv_windows(argv: list[str]) -> list[str]:
     if os.name != "nt" or not argv:
         return argv
     prog = argv[0]
-    resolved = shutil.which(prog) or prog
+    lookup_path, lookup_pathext = _get_env_path_and_pathext(env)
+    resolved = (
+        resolve_executable_with_pathext(prog, pathext=lookup_pathext, path=lookup_path)
+        or shutil.which(prog, path=lookup_path)
+        or prog
+    )
     lower = resolved.lower()
     if lower.endswith((".cmd", ".bat")):
-        unwrapped = unwrap_cmd_shim(resolved)
+        unwrapped = unwrap_cmd_shim(resolved, env=env)
         if unwrapped:
             return unwrapped + argv[1:]
         raise UnsupportedShimError(
@@ -717,7 +895,7 @@ def run_process(argv: list[str], cwd: Path, seconds: int = 600, env: dict[str, s
                 "truncated": t1 or t2, "duration_seconds": round(time.monotonic() - started, 3)}
 
     try:
-        cmd_argv = resolve_argv_windows(argv)
+        cmd_argv = resolve_argv_windows(argv, env=env)
     except UnsupportedShimError as exc:
         return result(126, "", str(exc))
 
@@ -761,7 +939,7 @@ def run_process_bounded(argv: list[str], cwd: Path, seconds: int = 600,
     started = time.monotonic()
 
     try:
-        cmd_argv = resolve_argv_windows(argv)
+        cmd_argv = resolve_argv_windows(argv, env=env)
     except UnsupportedShimError as exc:
         return {"code": 126, "stdout": "", "stderr": str(exc), "timed_out": False,
                 "truncated": False, "output_limit_exceeded": False,

@@ -723,6 +723,350 @@ class WindowsSupportTests(unittest.TestCase):
             self.assertEqual(unwrapped[2], f'--config={folder_with_spaces}{os.sep}a b.json')
             self.assertEqual(unwrapped[3], '--title=My App with Spaces')
 
+    def test_p1_npm_invocation_prefix_anchored_and_strict(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+            sibling_node = base / "node.exe"
+            sibling_node.write_text("binary", encoding="utf-8")
+
+            def make_npm_shim(inv_line: str) -> Path:
+                shim = base / f"shim_{abs(hash(inv_line))}.cmd"
+                content = (
+                    "@ECHO off\r\n"
+                    "GOTO start\r\n"
+                    ":find_dp0\r\n"
+                    "SET dp0=%~dp0\r\n"
+                    "EXIT /b\r\n"
+                    ":start\r\n"
+                    "SETLOCAL\r\n"
+                    "CALL :find_dp0\r\n"
+                    'IF EXIST "%dp0%\\node.exe" (\r\n'
+                    '  SET "_prog=%dp0%\\node.exe"\r\n'
+                    ") ELSE (\r\n"
+                    '  SET "_prog=node"\r\n'
+                    "  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+                    ")\r\n"
+                    f"{inv_line}\r\n"
+                )
+                shim.write_text(content, encoding="utf-8")
+                return shim
+
+            cli_target = f'"%dp0%\\{cli_js.name}"'
+            # 1. Exit before prefix
+            s1 = make_npm_shim(f'exit /b 1 & title %COMSPEC% & "%_prog%" {cli_target} %*')
+            self.assertIsNone(unwrap_cmd_shim(str(s1)))
+
+            # 2. Unexpected command before prefix
+            s2 = make_npm_shim(
+                f'echo malicious & title %COMSPEC% & "%_prog%" {cli_target} %*'
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s2)))
+
+            # 3. Command before full prefix
+            s3 = make_npm_shim(
+                "calc.exe & endlocal & goto #_undefined_# 2>NUL || "
+                f'title %COMSPEC% & "%_prog%" {cli_target} %*'
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s3)))
+
+            # 4. Added command after forwarding expression
+            s4 = make_npm_shim(
+                "endlocal & goto #_undefined_# 2>NUL || "
+                f'title %COMSPEC% & "%_prog%" {cli_target} %* & echo extra'
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s4)))
+
+            # 5. Malformed prefix operators: single pipe | instead of ||
+            s5 = make_npm_shim(
+                "endLocal & goto #_undefined_# 2>NUL | "
+                f'title %COMSPEC% & "%_prog%" {cli_target} %*'
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s5)))
+
+            # 6. Malformed prefix operators: missing 2>NUL
+            s6 = make_npm_shim(
+                "endLocal & goto #_undefined_# || "
+                f'title %COMSPEC% & "%_prog%" {cli_target} %*'
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s6)))
+
+            # 7. Supported: full genuine npm prefix
+            s7 = make_npm_shim(
+                "endLocal & goto #_undefined_# 2>NUL || "
+                f'title %COMSPEC% & "%_prog%" {cli_target} %*'
+            )
+            unwrapped7 = unwrap_cmd_shim(str(s7))
+            self.assertIsNotNone(unwrapped7)
+            self.assertEqual(unwrapped7[0], str(sibling_node))
+            self.assertEqual(unwrapped7[1], str(cli_js))
+
+            # 8. Supported: standard short title prefix
+            s8 = make_npm_shim(f'title %COMSPEC% & "%_prog%" {cli_target} %*')
+            unwrapped8 = unwrap_cmd_shim(str(s8))
+            self.assertIsNotNone(unwrapped8)
+            self.assertEqual(unwrapped8[0], str(sibling_node))
+            self.assertEqual(unwrapped8[1], str(cli_js))
+
+    def test_p1_npm_exact_interpreter_assignments(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+            sibling_node = base / "node.exe"
+            sibling_node.write_text("binary", encoding="utf-8")
+
+            def make_custom_npm(if_cond: str, if_body: str, else_body: str) -> Path:
+                shim = base / f"custom_{abs(hash((if_cond, if_body, else_body)))}.cmd"
+                content = (
+                    "@ECHO off\r\n"
+                    "GOTO start\r\n"
+                    ":find_dp0\r\n"
+                    "SET dp0=%~dp0\r\n"
+                    "EXIT /b\r\n"
+                    ":start\r\n"
+                    "SETLOCAL\r\n"
+                    "CALL :find_dp0\r\n"
+                    f"{if_cond} (\r\n"
+                    f"  {if_body}\r\n"
+                    ") ELSE (\r\n"
+                    f"  {else_body}\r\n"
+                    ")\r\n"
+                    "endLocal & goto #_undefined_# 2>NUL || "
+                    f'title %COMSPEC% & "%_prog%" "%dp0%\\{cli_js.name}" %*\r\n'
+                )
+                shim.write_text(content, encoding="utf-8")
+                return shim
+
+            std_if_cond = 'IF EXIST "%dp0%\\node.exe"'
+            std_if_body = 'SET "_prog=%dp0%\\node.exe"'
+            std_else_body = 'SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%'
+
+            # 1. Altered executable in IF: evilnode.exe
+            s1 = make_custom_npm(
+                std_if_cond, 'SET "_prog=%dp0%\\evilnode.exe"', std_else_body
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s1)))
+
+            # 2. Extra path components in IF: %dp0%\other\node.exe
+            s2 = make_custom_npm(
+                std_if_cond, 'SET "_prog=%dp0%\\other\\node.exe"', std_else_body
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s2)))
+
+            # 3. Non-exact IF condition: IF EXIST "%dp0%\evilnode.exe"
+            s3 = make_custom_npm(
+                'IF EXIST "%dp0%\\evilnode.exe"', std_if_body, std_else_body
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s3)))
+
+            # 4. Non-exact IF condition: IF EXIST "%dp0%\other\node.exe"
+            s4 = make_custom_npm(
+                'IF EXIST "%dp0%\\other\\node.exe"', std_if_body, std_else_body
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s4)))
+
+            # 5. Extra command in IF branch
+            s5 = make_custom_npm(
+                std_if_cond,
+                'SET "_prog=%dp0%\\node.exe"\r\n  SET "EXTRA=1"',
+                std_else_body,
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s5)))
+
+            # 6. Altered executable in ELSE branch: _prog=evilnode
+            s6 = make_custom_npm(
+                std_if_cond,
+                std_if_body,
+                'SET "_prog=evilnode"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%',
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s6)))
+
+            # 7. Unrecognized variable in ELSE branch
+            s7 = make_custom_npm(
+                std_if_cond,
+                std_if_body,
+                'SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  SET "EXTRA=1"',
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s7)))
+
+            # 8. Modified PATHEXT substitution in ELSE branch
+            s8 = make_custom_npm(
+                std_if_cond,
+                std_if_body,
+                'SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.EXE;=;%',
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(s8)))
+
+    def test_p2_child_environment_resolution(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            dir_parent = base / "parent_bin"
+            dir_parent.mkdir()
+            dir_child = base / "child_bin"
+            dir_child.mkdir()
+
+            node_name = "node.exe" if sys.platform == "win32" else "node"
+            parent_node = dir_parent / node_name
+            parent_node.write_text("parent node", encoding="utf-8")
+            child_node = dir_child / node_name
+            child_node.write_text("child node", encoding="utf-8")
+            if sys.platform != "win32":
+                parent_node.chmod(0o755)
+                child_node.chmod(0o755)
+
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            # Wrapper without sibling node.exe that relies on PATH node
+            npm_cmd = base / "tool.cmd"
+            npm_content = (
+                "@ECHO off\r\n"
+                "GOTO start\r\n"
+                ":find_dp0\r\n"
+                "SET dp0=%~dp0\r\n"
+                "EXIT /b\r\n"
+                ":start\r\n"
+                "SETLOCAL\r\n"
+                "CALL :find_dp0\r\n"
+                'IF EXIST "%dp0%\\node.exe" (\r\n'
+                '  SET "_prog=%dp0%\\node.exe"\r\n'
+                ") ELSE (\r\n"
+                '  SET "_prog=node"\r\n'
+                "  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+                ")\r\n"
+                "endLocal & goto #_undefined_# 2>NUL || "
+                f'title %COMSPEC% & "%_prog%" "%dp0%\\{cli_js.name}" %*\r\n'
+            )
+            npm_cmd.write_text(npm_content, encoding="utf-8")
+
+            # 1. When child env provides PATH, child_node must be selected over parent
+            child_env = {"PATH": str(dir_child)}
+            with patch.dict(os.environ, {"PATH": str(dir_parent)}):
+                unwrapped = unwrap_cmd_shim(str(npm_cmd), env=child_env)
+                self.assertIsNotNone(unwrapped)
+                self.assertEqual(
+                    os.path.normcase(unwrapped[0]), os.path.normcase(str(child_node))
+                )
+
+            # 2. Case-insensitive environment keys on Windows (Path instead of PATH)
+            case_env = {"Path": str(dir_child)}
+            with patch.dict(os.environ, {"PATH": str(dir_parent)}):
+                unwrapped = unwrap_cmd_shim(str(npm_cmd), env=case_env)
+                self.assertIsNotNone(unwrapped)
+                self.assertEqual(
+                    os.path.normcase(unwrapped[0]), os.path.normcase(str(child_node))
+                )
+
+            # 3. Child env excludes runtime -> fails closed (no parent fallback)
+            empty_dir = base / "empty_bin"
+            empty_dir.mkdir()
+            empty_env = {"PATH": str(empty_dir)}
+
+            py_script = base / "script.py"
+            py_script.write_text("print(1)", encoding="utf-8")
+            py_cmd = base / "pytool.cmd"
+            py_cmd.write_text(
+                f'@python "%~dp0\\{py_script.name}" %*\r\n', encoding="utf-8"
+            )
+
+            py_name = "python.exe" if sys.platform == "win32" else "python"
+            child_py = dir_child / py_name
+            child_py.write_text("child py", encoding="utf-8")
+            if sys.platform != "win32":
+                child_py.chmod(0o755)
+
+            unwrapped_py = unwrap_cmd_shim(str(py_cmd), env=child_env)
+            self.assertIsNotNone(unwrapped_py)
+            self.assertEqual(
+                os.path.normcase(unwrapped_py[0]), os.path.normcase(str(child_py))
+            )
+
+            # Child excludes python: must fail closed (sys.executable not used)
+            self.assertIsNone(unwrap_cmd_shim(str(py_cmd), env=empty_env))
+
+            # 4. resolve_argv_windows uses child environment
+            with (
+                patch("os.name", "nt"),
+                patch.dict(os.environ, {"PATH": str(dir_parent)}),
+            ):
+                resolved = resolve_argv_windows(
+                    [str(npm_cmd), "--flag"], env=child_env
+                )
+                self.assertEqual(
+                    os.path.normcase(resolved[0]),
+                    os.path.normcase(str(child_node)),
+                )
+                self.assertEqual(resolved[-1], "--flag")
+
+    def test_native_interpreter_targets_enforced(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            # 1. Sibling is non-native .cmd: node.cmd must NOT be accepted
+            sibling_cmd = base / "node.cmd"
+            sibling_cmd.write_text("@echo fake node\r\n", encoding="utf-8")
+
+            npm_cmd = base / "tool.cmd"
+            npm_cmd.write_text(
+                "@ECHO off\r\n"
+                "GOTO start\r\n"
+                ":find_dp0\r\n"
+                "SET dp0=%~dp0\r\n"
+                "EXIT /b\r\n"
+                ":start\r\n"
+                "SETLOCAL\r\n"
+                "CALL :find_dp0\r\n"
+                'IF EXIST "%dp0%\\node.exe" (\r\n'
+                '  SET "_prog=%dp0%\\node.exe"\r\n'
+                ") ELSE (\r\n"
+                '  SET "_prog=node"\r\n'
+                "  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+                ")\r\n"
+                "endLocal & goto #_undefined_# 2>NUL || "
+                f'title %COMSPEC% & "%_prog%" "%dp0%\\{cli_js.name}" %*\r\n',
+                encoding="utf-8",
+            )
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            fake_node_cmd = bin_dir / "node.cmd"
+            fake_node_cmd.write_text("@echo fake\r\n", encoding="utf-8")
+
+            # unwrap_cmd_shim must fail closed because only .cmd shims are in PATH
+            self.assertIsNone(
+                unwrap_cmd_shim(str(npm_cmd), env={"PATH": str(bin_dir)})
+            )
+
+            # 2. Straight-line node wrapper where PATH has node.cmd
+            straight_cmd = base / "straight.cmd"
+            straight_cmd.write_text(
+                f'@node "%~dp0\\{cli_js.name}" %*\r\n', encoding="utf-8"
+            )
+            self.assertIsNone(
+                unwrap_cmd_shim(str(straight_cmd), env={"PATH": str(bin_dir)})
+            )
+
+            # 3. Straight-line python wrapper where PATH has python.cmd
+            py_script = base / "test.py"
+            py_script.write_text("print(1)", encoding="utf-8")
+            py_cmd = base / "py.cmd"
+            py_cmd.write_text(
+                f'@python "%~dp0\\{py_script.name}" %*\r\n', encoding="utf-8"
+            )
+            fake_py_cmd = bin_dir / "python.cmd"
+            fake_py_cmd.write_text("@echo fake\r\n", encoding="utf-8")
+            self.assertIsNone(
+                unwrap_cmd_shim(str(py_cmd), env={"PATH": str(bin_dir)})
+            )
+
+            # 4. Explicit non-native executable target in direct invocation
+            direct_cmd = base / "direct.cmd"
+            direct_cmd.write_text('@"%~dp0\\node.cmd" %*\r\n', encoding="utf-8")
+            self.assertIsNone(unwrap_cmd_shim(str(direct_cmd)))
+
 
 class EvidenceIntegrityAndP2Tests(Harness):
     def test_artifact_hashes_recorded_post_redaction(self):
