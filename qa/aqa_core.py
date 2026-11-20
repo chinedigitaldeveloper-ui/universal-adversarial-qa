@@ -234,10 +234,23 @@ def _is_node_script(path: str) -> bool:
 
 
 def split_cmd_tokens(cmd_str: str) -> list[str]:
-    tokens = []
-    for m in re.finditer(r'"([^"]*)"|(\S+)', cmd_str):
-        val = m.group(1) if m.group(1) is not None else m.group(2)
-        tokens.append(val)
+    tokens: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    for ch in cmd_str:
+        if ch == '"':
+            in_quotes = not in_quotes
+            current.append(ch)
+        elif ch in (' ', '\t') and not in_quotes:
+            if current:
+                tokens.append(''.join(current))
+                current = []
+        else:
+            current.append(ch)
+    if in_quotes:
+        return []
+    if current:
+        tokens.append(''.join(current))
     return tokens
 
 
@@ -295,15 +308,19 @@ def _expand_fixed_arg(arg: str, cmd_dir: str) -> str | None:
     if "%" in expanded:
         return None
     if "%~dp0" in arg or "%dp0%" in arg:
-        if expanded.startswith('"') and expanded.endswith('"'):
+        if expanded.startswith('"') and expanded.endswith('"') and len(expanded) >= 2:
             expanded = expanded[1:-1]
         elif '="' in expanded and expanded.endswith('"'):
-            expanded = expanded.replace('="', '=').rstrip('"')
+            expanded = expanded.replace('="', '=', 1)[:-1]
         if "=" in expanded:
             prefix, path_part = expanded.split("=", 1)
             expanded = prefix + "=" + os.path.normpath(path_part.replace("\\", os.sep).replace("/", os.sep))
         else:
             expanded = os.path.normpath(expanded.replace("\\", os.sep).replace("/", os.sep))
+    elif expanded.startswith('"') and expanded.endswith('"') and len(expanded) >= 2:
+        expanded = expanded[1:-1]
+    elif '="' in expanded and expanded.endswith('"'):
+        expanded = expanded.replace('="', '=', 1)[:-1]
     return expanded
 
 
@@ -316,6 +333,8 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str) -> list[str] | None
             continue
         l = s.lower()
         if l.startswith(("rem ", "rem\t", "::")) or l == "rem":
+            if any(ch in s for ch in ("&", "|", "<", ">", "^")):
+                return None
             continue
         clean.append(s)
 
@@ -324,6 +343,8 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str) -> list[str] | None
 
     idx = 0
     if clean[idx].lower().lstrip("@").strip() in ("echo off", "echo on"):
+        if any(ch in clean[idx] for ch in ("&", "|", "<", ">", "^")):
+            return None
         idx += 1
 
     if idx + 8 > len(clean):
@@ -355,28 +376,83 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str) -> list[str] | None
     has_set_prog_sibling = False
     has_set_prog_node = False
     pathext_subst: str | None = None
+    state = "OUTSIDE"
 
     for mline in middle:
         mlower = mline.lower().strip()
-        if mlower in ("(", ")", ") else (", ") else", "else (", "else"):
-            continue
-        if mlower.startswith("if exist") and "node.exe" in mlower and "%dp0%" in mlower:
-            has_if_exist_node = True
-            continue
-        if mlower.startswith("set "):
-            var = mlower[4:].strip().strip('"')
-            if var.startswith("_prog=") and ("%dp0%" in var or cmd_dir.lower() in var) and "node.exe" in var:
-                has_set_prog_sibling = True
-                continue
-            if var.startswith("_prog=") and var.endswith("node"):
-                has_set_prog_node = True
-                continue
-            if var.startswith("pathext="):
-                pathext_subst = var[8:].strip()
-                continue
-        return None
+        if any(ch in mline for ch in ("&", "|", "<", ">", "^")):
+            return None
 
-    if not (has_if_exist_node and has_set_prog_sibling and has_set_prog_node and pathext_subst):
+        if state == "OUTSIDE":
+            if mlower.startswith("if exist") and "node.exe" in mlower and "%dp0%" in mlower:
+                has_if_exist_node = True
+                if mlower.endswith("("):
+                    state = "IN_IF"
+                else:
+                    state = "EXPECT_IF_OPEN"
+                continue
+            return None
+
+        elif state == "EXPECT_IF_OPEN":
+            if mlower == "(":
+                state = "IN_IF"
+                continue
+            return None
+
+        elif state == "IN_IF":
+            if mlower.startswith("set "):
+                var = mlower[4:].strip().strip('"')
+                if (
+                    var.startswith("_prog=")
+                    and ("%dp0%" in var or cmd_dir.lower() in var)
+                    and "node.exe" in var
+                ):
+                    has_set_prog_sibling = True
+                    continue
+                return None
+            if mlower in (") else (", ") else"):
+                if not has_set_prog_sibling:
+                    return None
+                state = "IN_ELSE" if "(" in mlower else "EXPECT_ELSE_OPEN"
+                continue
+            if mlower == ")":
+                state = "EXPECT_ELSE"
+                continue
+            return None
+
+        elif state == "EXPECT_ELSE":
+            if mlower.startswith("else"):
+                state = "IN_ELSE" if "(" in mlower else "EXPECT_ELSE_OPEN"
+                continue
+            return None
+
+        elif state == "EXPECT_ELSE_OPEN":
+            if mlower == "(":
+                state = "IN_ELSE"
+                continue
+            return None
+
+        elif state == "IN_ELSE":
+            if mlower.startswith("set "):
+                var = mlower[4:].strip().strip('"')
+                if var.startswith("_prog=") and var.endswith("node"):
+                    has_set_prog_node = True
+                    continue
+                if var.startswith("pathext="):
+                    pathext_subst = var[8:].strip()
+                    continue
+                return None
+            if mlower == ")":
+                state = "DONE"
+                continue
+            return None
+
+        elif state == "DONE":
+            return None
+
+    if state != "DONE" or not (
+        has_if_exist_node and has_set_prog_sibling and has_set_prog_node and pathext_subst
+    ):
         return None
 
     sibling_node = os.path.join(cmd_dir, "node.exe")
@@ -476,6 +552,10 @@ def unwrap_cmd_shim(cmd_path: str) -> list[str] | None:
         if not stripped:
             continue
         lower = stripped.lower()
+
+        # Reject any shell metacharacters before classifying or ignoring line
+        if any(ch in stripped for ch in ("&", "|", "<", ">", "^")):
+            return None
 
         # Ignore comments
         if lower.startswith(("rem ", "rem\t", "::")) or lower == "rem":

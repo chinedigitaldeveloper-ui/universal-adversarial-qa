@@ -643,6 +643,86 @@ class WindowsSupportTests(unittest.TestCase):
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
             )
 
+    def test_p1_rejects_chained_commands_in_ignored_boilerplate(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            # 1. @echo off & exit /b 1 before valid invocation
+            shim1 = base / "chained_echo.cmd"
+            shim1.write_text(f'@echo off & exit /b 1\r\nnode "%~dp0\\{cli_js.name}" %*\r\n', encoding="utf-8")
+            self.assertIsNone(unwrap_cmd_shim(str(shim1)))
+
+            # 2. title & exit /b 1
+            shim2 = base / "chained_title.cmd"
+            shim2.write_text(f'@title My Tool & exit /b 1\r\nnode "%~dp0\\{cli_js.name}" %*\r\n', encoding="utf-8")
+            self.assertIsNone(unwrap_cmd_shim(str(shim2)))
+
+            # 3. rem & exit /b 1
+            shim3 = base / "chained_rem.cmd"
+            shim3.write_text(f'REM Harmless comment & exit /b 1\r\nnode "%~dp0\\{cli_js.name}" %*\r\n', encoding="utf-8")
+            self.assertIsNone(unwrap_cmd_shim(str(shim3)))
+
+    def test_p1_npm_swapped_prog_assignments_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            tool_js = base / "tool.js"
+            tool_js.write_text("console.log(1);", encoding="utf-8")
+
+            sibling_node = base / "node.exe"
+            sibling_node.write_text("binary", encoding="utf-8")
+
+            # Swapped npm template: IF branch sets _prog=node, ELSE branch sets _prog=%dp0%\node.exe
+            swapped_cmd = base / "swapped.cmd"
+            swapped_cmd.write_text(
+                '@ECHO off\r\n'
+                'GOTO start\r\n'
+                ':find_dp0\r\n'
+                'SET dp0=%~dp0\r\n'
+                'EXIT /b\r\n'
+                ':start\r\n'
+                'SETLOCAL\r\n'
+                'CALL :find_dp0\r\n'
+                'IF EXIST "%dp0%\\node.exe" (\r\n'
+                '  SET "_prog=node"\r\n'
+                '  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n'
+                ') ELSE (\r\n'
+                '  SET "_prog=%dp0%\\node.exe"\r\n'
+                ')\r\n'
+                f'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\{tool_js.name}" %*\r\n',
+                encoding="utf-8"
+            )
+
+            # Must fail closed because assignments are not in their exact structural positions
+            self.assertIsNone(unwrap_cmd_shim(str(swapped_cmd)))
+
+    def test_p2_inline_quoted_arguments_and_paths_with_spaces(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            folder_with_spaces = base / "my tools"
+            folder_with_spaces.mkdir()
+
+            cli_js = folder_with_spaces / "my cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            config_json = folder_with_spaces / "a b.json"
+            config_json.write_text("{}", encoding="utf-8")
+
+            shim = base / "spaces.cmd"
+            shim.write_text(
+                '@node "%~dp0\\my tools\\my cli.js" --config="%~dp0\\my tools\\a b.json" --title="My App with Spaces" %*\r\n',
+                encoding="utf-8"
+            )
+
+            unwrapped = unwrap_cmd_shim(str(shim))
+            self.assertIsNotNone(unwrapped)
+            self.assertEqual(len(unwrapped), 4)
+            self.assertTrue(unwrapped[0].lower().endswith(("node", "node.exe")))
+            self.assertEqual(os.path.normcase(unwrapped[1]), os.path.normcase(str(cli_js)))
+            self.assertEqual(unwrapped[2], f'--config={folder_with_spaces}{os.sep}a b.json')
+            self.assertEqual(unwrapped[3], '--title=My App with Spaces')
+
 
 class EvidenceIntegrityAndP2Tests(Harness):
     def test_artifact_hashes_recorded_post_redaction(self):
