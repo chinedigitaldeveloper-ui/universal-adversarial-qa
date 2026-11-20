@@ -904,7 +904,7 @@ class WindowsSupportTests(unittest.TestCase):
             )
             self.assertIsNone(unwrap_cmd_shim(str(s8)))
 
-            # 9. Trailing whitespace or tabs on find_dp0 assignment
+            # 9. Trailing whitespace, tabs, or missing delimiter on find_dp0 assignment
             for bad_find_dp0 in (
                 "SET dp0=%~dp0  ",
                 "SET dp0=%~dp0\t",
@@ -912,6 +912,9 @@ class WindowsSupportTests(unittest.TestCase):
                 'SET "dp0=%~dp0"\t',
                 'SET " dp0=%~dp0"',
                 'SET "dp0=%~dp0 "',
+                "SETdp0=%~dp0",
+                'SETdp0="%~dp0"',
+                "@SETdp0=%~dp0",
             ):
                 s9 = make_custom_npm(std_if_cond, std_if_body, std_else_body, find_dp0_line=bad_find_dp0)
                 self.assertIsNone(unwrap_cmd_shim(str(s9)))
@@ -1277,6 +1280,9 @@ class WindowsSupportTests(unittest.TestCase):
                 'set dp0=%~dp0 \t ',
                 'set "dp0=%~dp0"  ',
                 'set "dp0=%~dp0"\t',
+                'setdp0=%~dp0',
+                'setdp0="%~dp0"',
+                '@setdp0=%~dp0',
             ):
                 bad_cmd = base / "bad_ws.cmd"
                 bad_cmd.write_text(

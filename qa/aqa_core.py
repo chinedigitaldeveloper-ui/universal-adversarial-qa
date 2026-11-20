@@ -433,7 +433,8 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str]
     if clean[idx + 1].lower() != ":find_dp0":
         return None
     raw_dp0 = clean_raw[idx + 2].lstrip(" \t@")
-    if not raw_dp0.lower().startswith("set"):
+    raw_dp0_lower = raw_dp0.lower()
+    if not (raw_dp0_lower.startswith(("set ", "set\t")) or raw_dp0_lower.startswith('set"')):
         return None
     var_assign_dp0 = raw_dp0[3:].lstrip(" \t")
     if var_assign_dp0.lower() not in ("dp0=%~dp0", '"dp0=%~dp0"'):
@@ -712,7 +713,8 @@ def unwrap_cmd_shim(cmd_path: str, env: dict[str, str] | None = None) -> list[st
             or clean_lower == "set"
         ):
             raw_clean = line_no_crlf.lstrip(" \t@")
-            if not raw_clean.lower().startswith("set"):
+            raw_clean_lower = raw_clean.lower()
+            if not (raw_clean_lower.startswith(("set ", "set\t")) or raw_clean_lower.startswith('set"')):
                 return None
             var_assign = raw_clean[3:].lstrip(" \t")
             if var_assign.lower() in ("dp0=%~dp0", '"dp0=%~dp0"'):
