@@ -429,8 +429,8 @@ def _unwrap_npm_template(raw_lines: list[str], cmd_dir: str, env: dict[str, str]
         return None
     if clean[idx + 1].lower() != ":find_dp0":
         return None
-    set_dp0 = clean[idx + 2].lower().lstrip("@").strip().strip('"')
-    if set_dp0 not in ("set dp0=%~dp0", "set \"dp0=%~dp0\""):
+    set_dp0 = clean[idx + 2].lower().lstrip("@").strip()
+    if set_dp0 not in ("set dp0=%~dp0", 'set "dp0=%~dp0"'):
         return None
     if clean[idx + 3].lower().strip() != "exit /b":
         return None
@@ -687,10 +687,12 @@ def unwrap_cmd_shim(cmd_path: str, env: dict[str, str] | None = None) -> list[st
         if clean_lower.startswith(("echo ", "title ")):
             continue
 
-        # Environment mutations: only harmless dp0 definition allowed
+        # Environment mutations: only harmless exact dp0 definition allowed
         if clean_lower.startswith("set "):
-            var_assign = clean_lower[4:].strip().strip('"')
-            if var_assign.startswith("dp0=%~dp0") or var_assign.startswith('"dp0=%~dp0'):
+            var_assign = clean_lower[4:].strip()
+            if var_assign.startswith('"') and var_assign.endswith('"'):
+                var_assign = var_assign[1:-1].strip()
+            if var_assign == "dp0=%~dp0":
                 continue
             return None
 

@@ -1196,6 +1196,78 @@ class WindowsSupportTests(unittest.TestCase):
                     self.assertIn("cannot safely execute Windows batch shim", res_bounded["stderr"])
                     mock_popen_bounded.assert_not_called()
 
+    def test_p2_straight_line_shim_requires_exact_dp0_assignment(self):
+        """Straight-line shims must strictly require exact dp0=%~dp0 and reject altered directories."""
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cli_js = base / "cli.js"
+            cli_js.write_text("console.log(1);", encoding="utf-8")
+
+            # 1. Negative test: altered directory `set dp0=%~dp0evil`
+            evil_cmd1 = base / "evil1.cmd"
+            evil_cmd1.write_text(
+                f'@echo off\r\nset dp0=%~dp0evil\r\nnode "%dp0%\\{cli_js.name}" %*\r\n',
+                encoding="utf-8",
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(evil_cmd1)))
+
+            # 2. Negative test: quoted altered directory `set "dp0=%~dp0evil"`
+            evil_cmd2 = base / "evil2.cmd"
+            evil_cmd2.write_text(
+                f'@echo off\r\nset "dp0=%~dp0evil"\r\nnode "%dp0%\\{cli_js.name}" %*\r\n',
+                encoding="utf-8",
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(evil_cmd2)))
+
+            # 3. Negative test: extra path separator or trailing commands
+            evil_cmd3 = base / "evil3.cmd"
+            evil_cmd3.write_text(
+                f'@echo off\r\nset dp0=%~dp0\\subdir\r\nnode "%dp0%\\{cli_js.name}" %*\r\n',
+                encoding="utf-8",
+            )
+            self.assertIsNone(unwrap_cmd_shim(str(evil_cmd3)))
+
+            # 4. Positive test: unquoted exact `set dp0=%~dp0`
+            valid_cmd1 = base / "valid1.cmd"
+            valid_cmd1.write_text(
+                f'@echo off\r\nset dp0=%~dp0\r\nnode "%dp0%\\{cli_js.name}" %*\r\n',
+                encoding="utf-8",
+            )
+            res1 = unwrap_cmd_shim(str(valid_cmd1))
+            self.assertIsNotNone(res1)
+            self.assertEqual(len(res1), 2)
+            self.assertEqual(os.path.normcase(os.path.abspath(res1[1])), os.path.normcase(os.path.abspath(str(cli_js))))
+
+            # 5. Positive test: quoted exact `set "dp0=%~dp0"`
+            valid_cmd2 = base / "valid2.cmd"
+            valid_cmd2.write_text(
+                f'@echo off\r\nset "dp0=%~dp0"\r\nnode "%dp0%\\{cli_js.name}" %*\r\n',
+                encoding="utf-8",
+            )
+            res2 = unwrap_cmd_shim(str(valid_cmd2))
+            self.assertIsNotNone(res2)
+            self.assertEqual(len(res2), 2)
+            self.assertEqual(os.path.normcase(os.path.abspath(res2[1])), os.path.normcase(os.path.abspath(str(cli_js))))
+
+            # 6. Fail-closed propagation for altered dp0
+            with patch("os.name", "nt"):
+                with self.assertRaises(UnsupportedShimError) as ctx:
+                    resolve_argv_windows([str(evil_cmd1), "arg1"])
+                self.assertIn("cannot safely execute Windows batch shim", str(ctx.exception))
+                self.assertIn(str(evil_cmd1), str(ctx.exception))
+
+                with patch("subprocess.Popen") as mock_popen:
+                    res = run_process([str(evil_cmd1), "arg1"], cwd=base)
+                    self.assertEqual(res["code"], 126)
+                    self.assertIn("cannot safely execute Windows batch shim", res["stderr"])
+                    mock_popen.assert_not_called()
+
+                with patch("subprocess.Popen") as mock_popen_bounded:
+                    res_bounded = run_process_bounded([str(evil_cmd1), "arg1"], cwd=base)
+                    self.assertEqual(res_bounded["code"], 126)
+                    self.assertIn("cannot safely execute Windows batch shim", res_bounded["stderr"])
+                    mock_popen_bounded.assert_not_called()
+
 
 class EvidenceIntegrityAndP2Tests(Harness):
     def test_artifact_hashes_recorded_post_redaction(self):
