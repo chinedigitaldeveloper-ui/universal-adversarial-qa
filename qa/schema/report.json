@@ -59,7 +59,7 @@
           "items": {"type": "object", "required": ["kind", "detail"], "properties": {
             "kind": {"enum": ["finding", "review_gap", "review_gate_blocked", "protected_files_changed",
                               "policy_weakened", "high_risk_change", "fix_ineffective", "fix_scope_violation",
-                              "tree_mutation_detected", "reviewer_degraded"]},
+                              "tree_mutation_detected", "reviewer_degraded", "verifier_incomplete", "verifier_degraded"]},
             "detail": {"type": "string"}}}
         }
       }

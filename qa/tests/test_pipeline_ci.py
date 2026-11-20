@@ -1,14 +1,19 @@
 import json
-import os
-import re
 import subprocess
 import sys
 import time
 import unittest
-from pathlib import Path
 
-import helpers
-from helpers import PY, QA, Harness, commit_all, passing_check, policy_v2, setup_repo, sh
+from helpers import (
+    PY,
+    QA,
+    Harness,
+    commit_all,
+    passing_check,
+    policy_v2,
+    setup_repo,
+    sh,
+)
 
 
 class DeterministicGateTests(Harness):
@@ -60,7 +65,7 @@ class DeterministicGateTests(Harness):
     def test_scanner_exit_code_mapping_distinguishes_findings_from_tool_errors(self):
         def run_with(code):
             check = {"name": "scan", "category": "secrets", "exit_codes": {"pass": [0], "fail": [1]},
-                     "argv": [PY, "-c", "raise SystemExit(%d)" % code]}
+                     "argv": [PY, "-c", f"raise SystemExit({code})"]}
             (self.repo / ".qa" / "policy.json").write_text(json.dumps(policy_v2([passing_check(), check])))
             return self.ci().returncode
         setup_repo(self.repo)
@@ -71,7 +76,7 @@ class DeterministicGateTests(Harness):
     def test_timeout_is_incomplete_and_kills_the_process_tree_fast(self):
         pidfile = self.tmp / "pid"
         script = ("import subprocess,sys,time;p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
-                  "open(%r,'w').write(str(p.pid));time.sleep(60)" % str(pidfile))   # hermetic PATH has no `sleep`
+                  f"open({str(pidfile)!r},'w').write(str(p.pid));time.sleep(60)")   # hermetic PATH has no `sleep`
         setup_repo(self.repo, policy_v2([passing_check(), {"name": "hang", "category": "other", "argv": [PY, "-c", script], "timeout_seconds": 2}]))
         started = time.monotonic()
         proc = self.ci()
@@ -128,14 +133,15 @@ class SecurityBoundaryTests(Harness):
 
     def test_ci_pipeline_never_loads_ai_adapters(self):
         setup_repo(self.repo)
-        code = ("import sys; sys.path.insert(0, %r); import aqa;"
-                "rc = aqa.main(['ci','--repo',%r,'--base','main']);"
-                "print('LOADED' if 'aqa_reviewers' in sys.modules else 'CLEAN'); sys.exit(rc)") % (str(QA), str(self.repo))
-        proc = subprocess.run([PY, "-c", code], capture_output=True, text=True, env=self.env())
+        code = (f"import sys; sys.path.insert(0, {str(QA)!r}); import aqa;"
+                f"rc = aqa.main(['ci','--repo',{str(self.repo)!r},'--base','main']);"
+                "print('LOADED' if 'aqa_reviewers' in sys.modules else 'CLEAN'); sys.exit(rc)")
+        proc = subprocess.run([PY, "-c", code], capture_output=True, text=True, env=self.env(), check=False)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("CLEAN", proc.stdout)
         self.assertEqual(self.invoked(), [])
 
+    @unittest.skipIf(sys.platform == "win32", "Windows filesystems do not allow newlines or colons in filenames")
     def test_github_annotations_cannot_be_injected_through_file_names(self):
         evil = ".github/workflows/x\n::set-output name=pwned::1\n.yml"
         setup_repo(self.repo, change=evil)

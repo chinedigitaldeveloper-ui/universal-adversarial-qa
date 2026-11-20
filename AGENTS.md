@@ -72,7 +72,7 @@ Run commands from this directory (or the active worktree):
 5. **Question Classification Invariant**:
    - Classifying findings as `question` vs `defect` is purely informational and must **never** downgrade finding severity or gate behavior.
 6. **Windows Security Hardening**:
-   - Windows command execution wraps non-exe invocations via `cmd.exe /d /s /c "..."` to prevent argument splitting and command injection from spaces or shell metacharacters (`&`, `|`, `<`, `>`, `^`, `%`).
+   - Windows command execution directly executes native executables and unwraps verified `.cmd`/`.bat` shims (`unwrap_cmd_shim`) directly into target runtimes (Node.js, Python, or binaries) without invoking `cmd.exe`. Unsupported, complex, or ambiguous shims fail closed (`UnsupportedShimError`, exit code 126 in subprocess runners) to prevent command injection and argument corruption from shell metacharacters (`&`, `|`, `<`, `>`, `^`, `%`).
    - Process tree termination on Windows uses `CREATE_NEW_PROCESS_GROUP` and `taskkill /F /T /PID`.
 7. **Evidence Integrity**:
    - Artifact hashes in reports are computed strictly *after* secret scrubbing.
@@ -84,7 +84,7 @@ Run commands from this directory (or the active worktree):
 
 - **Standard Library Only**: No external pip dependencies. Rely strictly on Python standard library modules.
 - **Cross-Platform Primitives**: Write path operations that normalize to forward slashes. Ensure process supervision handles both POSIX process groups (`os.killpg`) and Windows process trees (`taskkill`).
-- **Test Invariants**: Maintain all 134 tests in `qa/tests/`. Ensure count invariants hold across all review and report scenarios:
+- **Test Invariants**: Maintain all 149 automated unit and integration tests (148 passing, 1 skipped canary test reserved for live smoke environments with `AQA_LIVE_SMOKE=1`) in `qa/tests/`. Ensure count invariants hold across all review and report scenarios:
   $$\text{raw\_cli\_events} \ge \text{raw\_finding\_events} \ge \text{accepted\_findings} \ge \text{deduplicated\_findings} = \text{open\_findings} + \text{suppressed\_findings}$$
 - **Schema Compatibility**: Preserve `schema_version: 2` with additive, optional fields.
 

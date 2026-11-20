@@ -26,13 +26,40 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from aqa_contracts import load_contracts, verify_tool  # noqa: E402
-from aqa_core import (EXIT_ESCALATED, EXIT_FAILED, EXIT_INCOMPLETE, EXIT_PASSED, SEVERITY, VERSION,  # noqa: E402
-                      changed_files, compute_tree_provenance, diff_numstat, emit, file_digests, git, now_iso, resolve_base,
-                      run_process, save, save_json, scrubbed_env, git_env, sha256_file)
-from aqa_policy import (AGENT_CHOICES, assess_risk, glob_match, is_protected, load_policy,  # noqa: E402
-                        load_resolutions, load_triage, policy_diff)
-from aqa_report import github_outputs, markdown, pilot_summary, pilot_markdown  # noqa: E402
+from aqa_contracts import load_contracts, verify_tool
+from aqa_core import (
+    EXIT_ESCALATED,
+    EXIT_FAILED,
+    EXIT_INCOMPLETE,
+    EXIT_PASSED,
+    SEVERITY,
+    VERSION,
+    changed_files,
+    compute_tree_provenance,
+    diff_numstat,
+    emit,
+    file_digests,
+    git,
+    git_env,
+    now_iso,
+    resolve_base,
+    run_process,
+    save,
+    save_json,
+    scrubbed_env,
+    sha256_file,
+)
+from aqa_policy import (
+    AGENT_CHOICES,
+    assess_risk,
+    glob_match,
+    is_protected,
+    load_policy,
+    load_resolutions,
+    load_triage,
+    policy_diff,
+)
+from aqa_report import github_outputs, markdown, pilot_markdown, pilot_summary
 
 BASELINE = {"name": "git-diff-whitespace", "category": "format", "required": True}
 
@@ -106,7 +133,8 @@ def _executable_found(cmd0: str, cwd: Path, env: dict[str, str]) -> bool:
 
 
 def baseline_check(ctx: dict[str, Any], round_dir: Path) -> dict[str, Any]:
-    result = run_process(["git", "diff", "--check", ctx["merge_base"]], ctx["repo"], 60, env=git_env(), max_output=None)
+    result = run_process(["git", "-c", "core.whitespace=cr-at-eol", "diff", "--check", ctx["merge_base"]],
+                         ctx["repo"], 60, env=git_env(), max_output=None)
     log = round_dir / "check-00-git-diff.log"
     save(log, result["stdout"] + "\n" + result["stderr"])
     status = classify_exit(result["code"], {"pass": [0], "fail": [2]})
@@ -121,22 +149,22 @@ def execute_check(ctx: dict[str, Any], item: dict[str, Any], index: int, round_d
     env = scrubbed_env(policy["env_passthrough"] + item["env_passthrough"], item["env"])
     base = {"name": item["name"], "category": item["category"], "required": item["required"], "argv": cmd}
     if not cwd.is_dir():
-        return {**base, "status": "incomplete", "reason": "working directory does not exist: %s" % item["cwd"]}
+        return {**base, "status": "incomplete", "reason": "working directory does not exist: {}".format(item["cwd"])}
     if not _executable_found(cmd[0], cwd, env):
         return {**base, "status": "incomplete" if item["required"] else "skipped",
-                "reason": "executable '%s' not installed" % cmd[0]}
+                "reason": f"executable '{cmd[0]}' not installed"}
     result = run_process(cmd, cwd, item["timeout_seconds"], env=env)
     safe = "".join(c if c.isalnum() or c in "_-" else "-" for c in item["name"])
-    log = round_dir / ("check-%02d-%s.log" % (index, safe))
+    log = round_dir / f"check-{index:02d}-{safe}.log"
     save(log, result["stdout"] + "\n--- stderr ---\n" + result["stderr"])
     status = "incomplete" if result["timed_out"] else classify_exit(result["code"], item["exit_codes"])
     entry = {**base, "status": status, "exit_code": result["code"], "duration_seconds": result["duration_seconds"],
              "log": log.name, "log_sha256": sha256_file(log)}
     if result["timed_out"]:
-        entry["reason"] = "timed out after %ds (process group killed)" % item["timeout_seconds"]
+        entry["reason"] = f"timed out after {item['timeout_seconds']}s (process group killed)"
     elif status == "incomplete":
-        entry["reason"] = ("check process terminated by signal %d" % -result["code"] if result["code"] < 0
-                           else "exit code %s is not a declared pass/fail code (tool error, not a verdict)" % result["code"])
+        entry["reason"] = (f"check process terminated by signal {-result['code']}" if result["code"] < 0
+                           else f"exit code {result['code']} is not a declared pass/fail code (tool error, not a verdict)")
     return entry
 
 
@@ -150,7 +178,7 @@ def run_checks(ctx: dict[str, Any], round_dir: Path, require_checks: bool) -> li
     policy = ctx["policy"]
     results = [baseline_check(ctx, round_dir)]
     for index, item in enumerate(policy["checks"], 1):
-        emit("  check: %s [%s]" % (item["name"], item["category"]))
+        emit("  check: {} [{}]".format(item["name"], item["category"]))
         results.append(execute_check(ctx, item, index, round_dir))
     if require_checks:
         if not policy["checks"]:
@@ -160,7 +188,7 @@ def run_checks(ctx: dict[str, Any], round_dir: Path, require_checks: bool) -> li
             if not any(c["category"] == category and c["required"] for c in policy["checks"]):
                 results.append({"name": "coverage:" + category, "category": category, "required": True,
                                 "status": "incomplete",
-                                "reason": "policy requires category '%s' but no required check covers it" % category})
+                                "reason": f"policy requires category '{category}' but no required check covers it"})
     return results
 
 
@@ -181,7 +209,7 @@ def decide_gate(checks: list[dict[str, Any]], reviews: dict[str, Any], findings:
             reasons.append("check failed: " + check["name"])
         elif check["status"] == "incomplete":
             inconclusive = True
-            reasons.append("check incomplete: " + check["name"] + (" (%s)" % check["reason"] if check.get("reason") else ""))
+            reasons.append("check incomplete: " + check["name"] + (" ({})".format(check["reason"]) if check.get("reason") else ""))
     blocking: list[str] = []
     if mode == "blocking" and agents_selected:
         for name, review in reviews.items():
@@ -194,7 +222,7 @@ def decide_gate(checks: list[dict[str, Any]], reviews: dict[str, Any], findings:
         blocking = [f["id"] for f in findings if f["disposition"] == "open" and sev_at_least(f, threshold)]
         if blocking:
             failed = True
-            reasons.append("%d open AI finding(s) at or above %s (policy ai_review.mode=blocking)" % (len(blocking), threshold))
+            reasons.append(f"{len(blocking)} open AI finding(s) at or above {threshold} (policy ai_review.mode=blocking)")
     return {"status": "failed" if failed else "incomplete" if inconclusive else "passed",
             "blocking_findings": blocking, "reasons": reasons}
 
@@ -207,22 +235,22 @@ def build_escalations(ctx: dict[str, Any], reviews: dict[str, Any], findings: li
         if f["disposition"] == "open" and sev_at_least(f, threshold):
             verdict = (f.get("verification") or {}).get("verdict", "unverified")
             esc.append({"kind": "finding", "id": f["id"], "severity": f["severity"], "verdict": verdict,
-                        "detail": "%s %s: %s (%s:%s)" % (f["reviewer"], f["severity"], f["title"][:160],
+                        "detail": "{} {}: {} ({}:{})".format(f["reviewer"], f["severity"], f["title"][:160],
                                                          f["file"] or "?", f["line"] or "?")})
     for name, review in reviews.items():
         if review.get("status") == "incomplete":
-            esc.append({"kind": "review_gap", "detail": "%s did not complete: %s" % (name, review.get("note", ""))})
+            esc.append({"kind": "review_gap", "detail": "{} did not complete: {}".format(name, review.get("note", ""))})
         elif review.get("status") == "degraded":
-            esc.append({"kind": "reviewer_degraded", "detail": "%s review was degraded: %s" % (name, review.get("note", ""))})
+            esc.append({"kind": "reviewer_degraded", "detail": "{} review was degraded: {}".format(name, review.get("note", ""))})
         gate = review.get("gate") or {}
         if name == "coderabbit" and gate.get("status") == "blocked" and not any(
                 f["reviewer"] == "coderabbit" for f in findings):  # findings exist (even if a human suppressed them) => no extra signal
             esc.append({"kind": "review_gate_blocked", "detail": "CodeRabbit's native gate blocked without detailed findings"})
     if verification:
         if verification.get("status") == "incomplete":
-            esc.append({"kind": "verifier_incomplete", "detail": "Codex verifier did not complete: %s" % verification.get("note", "")})
+            esc.append({"kind": "verifier_incomplete", "detail": "Codex verifier did not complete: {}".format(verification.get("note", ""))})
         elif verification.get("status") == "degraded":
-            esc.append({"kind": "verifier_degraded", "detail": "Codex verifier was degraded: %s" % verification.get("note", "")})
+            esc.append({"kind": "verifier_degraded", "detail": "Codex verifier was degraded: {}".format(verification.get("note", ""))})
     if ctx["protected_changed"]:
         esc.append({"kind": "protected_files_changed", "detail": "QA/CI/ownership files changed: " + ", ".join(ctx["protected_changed"][:8])})
     pd = ctx["policy_diff"]
@@ -247,7 +275,7 @@ def build_escalations(ctx: dict[str, Any], reviews: dict[str, Any], findings: li
 def prepare(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(args.repo).resolve()
     if git(repo, "rev-parse", "--is-inside-work-tree") != "true":
-        raise ValueError("Not a git repository: %s" % repo)
+        raise ValueError(f"Not a git repository: {repo}")
     base_sha, merge_base, warning = resolve_base(repo, args.base)
     policy, meta = load_policy(repo, args.policy, args.policy_source, base_sha)
     out = Path(args.out)
@@ -268,7 +296,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         except ValueError as exc:
             pdiff = {"changed": True, "weakened": False, "removed_checks": [], "optional_checks": [],
                      "removed_required_categories": [], "modified_checks": [], "ai_relaxed": False,
-                     "note": "worktree policy unusable: %s" % exc}
+                     "note": f"worktree policy unusable: {exc}"}
     else:
         pdiff = policy_diff(policy, repo, policy_path, base_sha)
     return {"repo": repo, "base": args.base, "base_sha": base_sha, "merge_base": merge_base, "policy": policy,
@@ -322,13 +350,13 @@ def conclude(ctx: dict[str, Any], report: dict[str, Any], started: float, strict
     persist(ctx, report, started)
     github_outputs(report)
     emit("")
-    emit("=== AQA %s pipeline: gate %s ===" % (report["pipeline"], report["gate"]["status"].upper()))
+    emit("=== AQA {} pipeline: gate {} ===".format(report["pipeline"], report["gate"]["status"].upper()))
     for reason in report["gate"]["reasons"]:
         emit("  - " + reason)
     if report["review"]["human_review_required"]:
         emit("HUMAN REVIEW REQUIRED (advisory; does not change the gate):")
         for item in report["review"]["escalations"]:
-            emit("  - [%s] %s" % (item["kind"], item["detail"]))
+            emit("  - [{}] {}".format(item["kind"], item["detail"]))
     emit("Report: %s" % (ctx["out"] / "report.md"))
     return exit_code(report, strict)
 
@@ -339,7 +367,7 @@ def cmd_ci(args: argparse.Namespace) -> int:
     started = time.monotonic()
     ctx = prepare(args)
     tree_start = compute_tree_provenance(ctx["repo"], exclude_dir=ctx["out"])
-    emit("Pipeline B (deterministic PR gate) repo=%s base=%s risk=%s" % (ctx["repo"], ctx["merge_base"][:12], ctx["risk"]["tier"]))
+    emit("Pipeline B (deterministic PR gate) repo={} base={} risk={}".format(ctx["repo"], ctx["merge_base"][:12], ctx["risk"]["tier"]))
     report = new_report(ctx, "ci")
     round_dir = ctx["out"] / "round-01"
     round_dir.mkdir(parents=True, exist_ok=True)
@@ -352,10 +380,10 @@ def cmd_ci(args: argparse.Namespace) -> int:
     if tree_changed:
         if strict_prov:
             gate["status"] = "incomplete"
-            gate["reasons"].append("working tree modified during execution (provenance check failed: start=%s end=%s)" % (
+            gate["reasons"].append("working tree modified during execution (provenance check failed: start={} end={})".format(
                 tree_start["fingerprint"][:16], tree_end["fingerprint"][:16]))
         else:
-            report["warnings"].append("Working tree modified during execution (tree fingerprint changed: start=%s end=%s)" % (
+            report["warnings"].append("Working tree modified during execution (tree fingerprint changed: start={} end={})".format(
                 tree_start["fingerprint"][:16], tree_end["fingerprint"][:16]))
 
     esc = build_escalations(ctx, {}, [], "major")
@@ -399,13 +427,13 @@ def fix_violations(touched: list[str], fix_policy: dict[str, Any]) -> list[str]:
     problems = []
     for path in touched:
         if is_protected(path):
-            problems.append("%s: protected QA/CI/ownership file" % path)
+            problems.append(f"{path}: protected QA/CI/ownership file")
         elif any(glob_match(g, path) for g in fix_policy["forbidden_paths"]):
-            problems.append("%s: matches forbidden_paths" % path)
+            problems.append(f"{path}: matches forbidden_paths")
         elif not any(glob_match(g, path) for g in fix_policy["allowed_paths"]):
-            problems.append("%s: outside allowed_paths" % path)
+            problems.append(f"{path}: outside allowed_paths")
     if len(touched) > fix_policy["max_files"]:
-        problems.append("fixer touched %d files; auto_fix.max_files is %d" % (len(touched), fix_policy["max_files"]))
+        problems.append(f"fixer touched {len(touched)} files; auto_fix.max_files is {fix_policy['max_files']}")
     return problems
 
 
@@ -425,10 +453,10 @@ def cmd_review(args: argparse.Namespace) -> int:
     selected = select_agents(args.agents, ctx["risk"])
     report = new_report(ctx, "review")
     report["warnings"] += res_warnings + triage_warnings
-    emit("Pipeline A (local adversarial review) repo=%s base=%s risk=%s agents=%s (requested %s)" % (
+    emit("Pipeline A (local adversarial review) repo={} base={} risk={} agents={} (requested {})".format(
         ctx["repo"], ctx["merge_base"][:12], ctx["risk"]["tier"], selected, args.agents))
     if args.agents == "auto":
-        emit("  agent selection by risk tier %s: %s" % (ctx["risk"]["tier"], selected))
+        emit("  agent selection by risk tier {}: {}".format(ctx["risk"]["tier"], selected))
     contracts = load_contracts()
     tools: dict[str, dict[str, Any]] = {}
 
@@ -443,7 +471,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         if status["status"] == "ok":
             return None
         return {"status": "incomplete", "findings": [], "contract": status["status"], "duration_seconds": 0.0,
-                "note": "CLI contract %s: %s" % (status["status"], "; ".join(status["reasons"]))}
+                "note": "CLI contract {}: {}".format(status["status"], "; ".join(status["reasons"]))}
 
     previous: set[str] = set()
     final_gate: dict[str, Any] | None = None
@@ -451,8 +479,8 @@ def cmd_review(args: argparse.Namespace) -> int:
     final_part: dict[str, Any] = {}
     tree_start = compute_tree_provenance(ctx["repo"], exclude_dir=ctx["out"])
     for index in range(1, args.max_rounds + 1):
-        emit("Round %d/%d" % (index, args.max_rounds))
-        round_dir = ctx["out"] / ("round-%02d" % index)
+        emit(f"Round {index}/{args.max_rounds}")
+        round_dir = ctx["out"] / f"round-{index:02d}"
         round_dir.mkdir(parents=True, exist_ok=True)
         files = changed_files(ctx["repo"], ctx["merge_base"], exclude_dir=ctx["out"])
         tree_round_start = compute_tree_provenance(ctx["repo"], exclude_dir=ctx["out"])
@@ -494,9 +522,8 @@ def cmd_review(args: argparse.Namespace) -> int:
         esc = build_escalations(ctx, reviews, findings, threshold, verification)
         if tree_changed_in_checks:
             esc.append({"kind": "tree_mutation_detected",
-                        "detail": "Working tree modified during check execution (start=%s, end=%s)" % (
-                            tree_start["fingerprint"][:16], tree_after_checks["fingerprint"][:16])})
-        esc += [{"kind": "fix_ineffective", "detail": "finding recurred after a fix attempt: %s" % f["title"][:120]}
+                        "detail": f"Working tree modified during check execution (start={tree_start['fingerprint'][:16]}, end={tree_after_checks['fingerprint'][:16]})"})
+        esc += [{"kind": "fix_ineffective", "detail": f"finding recurred after a fix attempt: {f['title'][:120]}"}
                 for f in findings if f["recurring"] and f["disposition"] == "open"]
 
         require_rev_failed = False
@@ -504,8 +531,7 @@ def cmd_review(args: argparse.Namespace) -> int:
             for r_name, r_rev in reviews.items():
                 if r_rev.get("status") in ("missing", "incomplete", "degraded"):
                     require_rev_failed = True
-                    gate["reasons"].append("required reviewer %s is %s: %s" % (
-                        r_name, r_rev.get("status"), r_rev.get("note", "")))
+                    gate["reasons"].append(f"required reviewer {r_name} is {r_rev.get('status')}: {r_rev.get('note', '')}")
         if require_rev_failed:
             report["require_reviewers_failed"] = True
 
@@ -518,7 +544,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         report["review"] = {"selected_agents": selected, "coverage": "none", "human_review_required": bool(esc),
                             "escalations": esc}
         persist(ctx, report, started)
-        emit("  gate: %s (%d findings, %d escalations)" % (gate["status"], len(findings), len(esc)))
+        emit(f"  gate: {gate['status']} ({len(findings)} findings, {len(esc)} escalations)")
         previous |= {f["fingerprint"] for f in open_findings}
         escalated_open = [f for f in open_findings if sev_at_least(f, threshold)]
         if not args.fix or index == args.max_rounds or not (gate["status"] == "failed" or escalated_open):
@@ -569,22 +595,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     base_sha = git(repo, "rev-parse", "--verify", args.base + "^{commit}") if args.base else None
     policy, meta = load_policy(repo, args.policy, "worktree")
-    emit("Repository: %s" % repo)
-    emit("Policy: %s (v%s, %d checks, required categories: %s)" % (
-        meta["path"], policy["version"], len(policy["checks"]), ", ".join(policy["required_categories"]) or "none"))
+    emit(f"Repository: {repo}")
+    emit(f"Policy: {meta['path']} (v{policy['version']}, {len(policy['checks'])} checks, required categories: {', '.join(policy['required_categories']) or 'none'})")
     for warning in meta["warnings"]:
         emit("  warning: " + warning)
     if not policy["checks"]:
         emit("  NOT READY: no checks configured; Pipeline B would report INCOMPLETE")
-    emit("Git HEAD: %s" % git(repo, "rev-parse", "--short", "HEAD"))
+    emit(f"Git HEAD: {git(repo, 'rev-parse', '--short', 'HEAD')}")
     if base_sha:
-        emit("Base: %s" % base_sha)
+        emit(f"Base: {base_sha}")
     contracts = load_contracts()
     bad = False
     for name in contracts["tools"]:
         status = verify_tool(name, contracts, repo)
-        emit("Tool %-10s %-12s version=%s %s" % (name, status["status"].upper(), status["version"] or "?",
-                                               "; ".join(status["reasons"])))
+        emit(f"Tool {name:<10} {status['status'].upper():<12} version={status['version'] or '?'} {'; '.join(status['reasons'])}")
         bad = bad or status["status"] != "ok"
     emit("Doctor verifies presence, version floor and CLI flags. It does NOT prove authentication, "
          "review quality or test coverage; run `doctor --probe` or `smoke --live` for that.")
@@ -596,7 +620,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         import aqa_reviewers as rv
         probe_bad = False
         for name in contracts["tools"]:
-            emit("Probing %s..." % name)
+            emit(f"Probing {name}...")
             tmp = Path(tempfile.mkdtemp(prefix="aqa-probe-"))
             try:
                 base = smoke_fixture(tmp)
@@ -607,11 +631,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 else:
                     live = rv.coderabbit_review(tmp, base, "major", round_dir, ["app.py"], timeout=60)
                 ok = live["status"] in ("completed", "degraded")
-                emit("  %s probe %s (status=%s, latency=%.2fs)" % (
+                emit("  {} probe {} (status={}, latency={:.2f}s)".format(
                     name, "PASSED" if ok else "FAILED", live["status"], live.get("duration_seconds", 0.0)))
                 if not ok:
                     probe_bad = True
-                    emit("    reason: %s" % live.get("note", ""))
+                    emit("    reason: {}".format(live.get("note", "")))
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
         if probe_bad:
@@ -627,7 +651,7 @@ def cmd_contracts_verify(args: argparse.Namespace) -> int:
         print(json.dumps(results, indent=2))
     else:
         for r in results:
-            emit("%-11s %-12s version=%-10s min=%s" % (r["tool"], r["status"].upper(), r["version"] or "-", r["min_version"] or "-"))
+            emit(f"{r['tool']:<11} {r['status'].upper():<12} version={r['version'] or '-':<10} min={r['min_version'] or '-'}")
             for reason in r["reasons"]:
                 emit("    " + reason)
     if any(r["status"] == "violated" for r in results):
@@ -674,7 +698,7 @@ def cmd_smoke(args: argparse.Namespace) -> int:
             try:
                 base = smoke_fixture(tmp)
                 round_dir = out / name
-                emit("live smoke: %s on a seeded fixture (timeout %ds)" % (name, args.timeout))
+                emit(f"live smoke: {name} on a seeded fixture (timeout {args.timeout}s)")
                 if name == "codex":
                     live = rv.codex_review(tmp, base, round_dir, timeout=args.timeout)
                 else:
@@ -690,9 +714,9 @@ def cmd_smoke(args: argparse.Namespace) -> int:
                 if not args.keep_fixture:
                     shutil.rmtree(tmp, ignore_errors=True)
         report["tools"][name] = entry
-        emit("%-11s %s" % (name, entry["status"].upper()))
+        emit(f"{name:<11} {entry['status'].upper()}")
     save_json(out / "smoke-report.json", report)
-    emit("Wrote %s" % (out / "smoke-report.json"))
+    emit(f"Wrote {out / 'smoke-report.json'}")
     statuses = {e["status"] for e in report["tools"].values()}
     if statuses & {"violated", "failed"}:
         return EXIT_FAILED
@@ -726,12 +750,12 @@ class Parser(argparse.ArgumentParser):
 
     def error(self, message: str) -> None:  # usage errors are configuration errors (3), never 'failed' (2)
         self.print_usage(sys.stderr)
-        print("QA configuration error: %s" % message, file=sys.stderr)
+        print(f"QA configuration error: {message}", file=sys.stderr)
         sys.exit(EXIT_INCOMPLETE)
 
 
 def build_parser() -> Parser:
-    parser = Parser(description="Portable adversarial QA runner v%s" % VERSION)
+    parser = Parser(description=f"Portable adversarial QA runner v{VERSION}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def common(p: argparse.ArgumentParser, default_out: str = ".qa/out") -> None:
@@ -804,9 +828,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (ValueError, OSError, json.JSONDecodeError) as exc:
-        print("QA configuration error: %s" % exc, file=sys.stderr)
+        print(f"QA configuration error: {exc}", file=sys.stderr)
         return EXIT_INCOMPLETE
-    except Exception:  # an orchestrator bug must never look like a pass or a clean failure
+    except Exception:  # noqa: BLE001  (an orchestrator bug must never look like a pass or a clean failure)
         traceback.print_exc()
         print("QA internal error (treated as INCOMPLETE).", file=sys.stderr)
         return EXIT_INCOMPLETE

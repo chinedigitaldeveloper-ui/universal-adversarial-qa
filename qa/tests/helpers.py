@@ -16,8 +16,7 @@ QA = Path(__file__).resolve().parents[1]
 SCRIPT = QA / "aqa.py"
 sys.path.insert(0, str(QA))
 
-import aqa_core  # noqa: E402
-from aqa_core import validate_json  # noqa: E402
+from aqa_core import validate_json
 
 PY = sys.executable
 
@@ -40,17 +39,19 @@ def setup_repo(root: Path, policy: dict[str, Any] | None = None, change: str = "
     sh(root, "git", "config", "user.email", "test@example.invalid")
     sh(root, "git", "config", "user.name", "Test")
     sh(root, "git", "config", "commit.gpgsign", "false")
+    sh(root, "git", "config", "core.autocrlf", "false")
+    sh(root, "git", "config", "core.whitespace", "cr-at-eol")
     (root / ".qa").mkdir(exist_ok=True)
-    (root / ".qa" / "policy.json").write_text(json.dumps(policy if policy is not None else policy_v2()), encoding="utf-8")
-    (root / ".gitignore").write_text(".qa/out/\n", encoding="utf-8")
-    (root / "demo.txt").write_text("baseline\n", encoding="utf-8")
+    (root / ".qa" / "policy.json").write_text(json.dumps(policy if policy is not None else policy_v2()), encoding="utf-8", newline="\n")
+    (root / ".gitignore").write_text(".qa/out/\n", encoding="utf-8", newline="\n")
+    (root / "demo.txt").write_text("baseline\n", encoding="utf-8", newline="\n")
     sh(root, "git", "add", ".")
     sh(root, "git", "commit", "-qm", "baseline")
     sh(root, "git", "switch", "-qc", "feature")
     target = root / change
     target.parent.mkdir(parents=True, exist_ok=True)
     existing = target.read_text(encoding="utf-8") if target.exists() else ""
-    target.write_text(existing + "change\n", encoding="utf-8")
+    target.write_text(existing + "change\n", encoding="utf-8", newline="\n")
     sh(root, "git", "add", ".")
     sh(root, "git", "commit", "-qm", "change")
 
@@ -65,9 +66,27 @@ def hermetic_path(tmp: Path, bindir: Path | None = None) -> str:
     base = tmp / "_sysbin"
     if not base.exists():
         base.mkdir()
-        (base / "git").symlink_to(shutil.which("git"))
+        git_exe = shutil.which("git")
+        if git_exe:
+            try:
+                (base / "git").symlink_to(git_exe)
+            except (OSError, NotImplementedError):
+                shutil.copy(git_exe, base / ("git.exe" if sys.platform == "win32" else "git"))
+            if sys.platform == "win32" and not (base / "git.exe").exists():
+                try:
+                    (base / "git.exe").symlink_to(git_exe)
+                except (OSError, NotImplementedError):
+                    shutil.copy(git_exe, base / "git.exe")
         for name in ("python", "python3"):
-            (base / name).symlink_to(PY)
+            try:
+                (base / name).symlink_to(PY)
+            except (OSError, NotImplementedError):
+                shutil.copy(PY, base / (f"{name}.exe" if sys.platform == "win32" else name))
+            if sys.platform == "win32" and not (base / f"{name}.exe").exists():
+                try:
+                    (base / f"{name}.exe").symlink_to(PY)
+                except (OSError, NotImplementedError):
+                    shutil.copy(PY, base / f"{name}.exe")
     parts = ([str(bindir)] if bindir else []) + [str(base)]
     return os.pathsep.join(parts)
 
@@ -122,7 +141,14 @@ sys.exit(2 if vulnerable else 0)
 
 def write_exe(path: Path, source: str) -> None:
     path.write_text(source, encoding="utf-8")
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    try:
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    except OSError:
+        pass
+    if sys.platform == "win32":
+        cmd_wrapper = f'@"{PY}" "%~dp0{path.name}" %*\n'
+        (path.parent / f"{path.name}.cmd").write_text(cmd_wrapper, encoding="utf-8")
+        (path.parent / f"{path.name}.bat").write_text(cmd_wrapper, encoding="utf-8")
 
 
 def fake_codex(bindir: Path, behavior: str = CODEX_CLEAN, version: str = "codex-cli 0.77.0", help_text: str = CODEX_HELP) -> None:
@@ -151,11 +177,13 @@ class Harness(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY")}
         env["PATH"] = hermetic_path(self.tmp, self.bin)
         env["AQA_FAKE_LOG"] = str(self.fake_log)
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         env.update(extra)
         return env
 
     def aqa(self, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-        return subprocess.run([PY, str(SCRIPT), *args], capture_output=True, text=True, env=env or self.env(), cwd=self.repo)
+        return subprocess.run([PY, str(SCRIPT), *args], capture_output=True, text=True, encoding="utf-8", errors="replace", env=env or self.env(), cwd=self.repo, check=False)
 
     def ci(self, *extra: str, **env: str) -> subprocess.CompletedProcess:
         return self.aqa("ci", "--repo", str(self.repo), "--base", "main", *extra, env=self.env(**env))

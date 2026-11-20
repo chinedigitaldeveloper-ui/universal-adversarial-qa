@@ -1,28 +1,25 @@
 import os
-import sys
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import helpers  # noqa: F401  (adds qa/ to sys.path)
-from helpers import PY, Harness, passing_check, policy_v2, setup_repo
 import aqa_core as core
+import helpers  # noqa: F401  (adds qa/ to sys.path)
+from helpers import PY, Harness, setup_repo
 
 
 def process_alive(pid: int) -> bool:
     """A killed-but-unreaped child (zombie) is dead; plain kill(0) cannot tell the difference."""
     try:
-        state = Path("/proc/%d/stat" % pid).read_text().rsplit(")", 1)[1].split()[0]
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
         return state not in ("Z", "X")
-    except FileNotFoundError:
+    except (FileNotFoundError, OSError):
         pass
-    except OSError:
-        return True
     try:
         os.kill(pid, 0)
         return True
-    except ProcessLookupError:
+    except (ProcessLookupError, OSError):
         return False
 
 
@@ -31,11 +28,11 @@ class RedactionTests(unittest.TestCase):
         samples = ["sk-" + "a" * 30, "ghp_" + "A" * 36, "github_pat_" + "B" * 40, "AKIA" + "Q" * 16,
                    "xoxb-" + "1" * 12 + "-abc"]
         for token in samples:
-            self.assertNotIn(token, core.redact("value is %s here" % token))
+            self.assertNotIn(token, core.redact(f"value is {token} here"))
 
     def test_private_key_block_and_bearer(self):
         pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----"
-        self.assertNotIn("MIIabc", core.redact("x\n%s\ny" % pem))
+        self.assertNotIn("MIIabc", core.redact(f"x\n{pem}\ny"))
         self.assertNotIn("A" * 25, core.redact("Authorization: Bearer " + "A" * 25))
 
     def test_exact_env_secret_values_are_redacted_but_innocent_names_are_not(self):
@@ -93,7 +90,7 @@ class ProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = Path(tmp) / "child.pid"
             script = ("import subprocess,sys,time;"
-                      "p=subprocess.Popen(['sleep','60']);open(%r,'w').write(str(p.pid));time.sleep(60)" % str(pidfile))
+                      f"p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);open({str(pidfile)!r},'w').write(str(p.pid));time.sleep(60)")
             started = time.monotonic()
             result = core.run_process([PY, "-c", script], Path(tmp), seconds=2)
             self.assertTrue(result["timed_out"])

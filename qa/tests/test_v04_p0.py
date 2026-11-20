@@ -7,21 +7,21 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import tempfile
-import unittest
-from pathlib import Path
-from unittest import mock
+import sys
 
-import helpers
-from helpers import (CODEX_CLEAN, CR_CLEAN, CR_FINDING_WHILE_CHANGED, PY, Harness,
-                     commit_all, fake_codex, fake_coderabbit, passing_check, policy_v2,
-                     setup_repo, sh)
-import aqa
 import aqa_core as core
-import aqa_policy as policy_mod
 import aqa_reviewers as reviewers
-import aqa_report as report_mod
+from helpers import (
+    CR_CLEAN,
+    CR_FINDING_WHILE_CHANGED,
+    PY,
+    Harness,
+    fake_coderabbit,
+    fake_codex,
+    policy_v2,
+    setup_repo,
+    sh,
+)
 
 
 class TreeProvenanceTests(Harness):
@@ -32,7 +32,10 @@ class TreeProvenanceTests(Harness):
         self.assertTrue(fp1["fingerprint"].startswith("aqa-tree-v1:"))
 
         # Add a file with special chars
-        special_file = self.repo / "test:file with spaces and \n newline.txt"
+        if sys.platform == "win32":
+            special_file = self.repo / "test file with spaces and unicode 🚀 (extra).txt"
+        else:
+            special_file = self.repo / "test:file with spaces and \n newline.txt"
         special_file.write_bytes(b"hello world")
         fp2 = core.compute_tree_provenance(self.repo, exclude_dir=self.tmp / "out")
         self.assertNotEqual(fp1["fingerprint"], fp2["fingerprint"])
