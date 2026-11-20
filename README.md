@@ -123,7 +123,7 @@ qa/aqa_report.py          Markdown rendering, step summaries, pilot metrics
 qa/contracts/             cli.json, coderabbit-events.json
 qa/schema/                report.json, resolutions.json, triage.json, codex schemas
 qa/prompts/               redteam.md, verifier.md, fixer.md
-qa/tests/                 134 hermetic unit/acceptance tests + live smoke
+qa/tests/                 158 hermetic unit/acceptance tests + live smoke
 examples/                 policies (with provenance), workflows, CODEOWNERS, optional extras
 docs/                     CONTRACTS.md, POLICY.md, PILOT.md
 RELEASE_MANIFEST.sha256   SHA-256 manifest of all release files
@@ -137,7 +137,7 @@ Run the hermetic test discovery suite:
 ```bash
 python3 -m unittest discover -s qa/tests
 ```
-Result: **134 total tests** (133 passed, 1 skipped live smoke test, 0 failed, 0 errors).
+Result: **158 total tests** (157 passed, 1 skipped live smoke test, 0 failed, 0 errors).
 Verify tool contracts locally:
 ```bash
 python3 qa/aqa.py contracts verify
