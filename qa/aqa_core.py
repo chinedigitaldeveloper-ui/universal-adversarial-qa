@@ -865,8 +865,8 @@ def resolve_argv_windows(
     prog = argv[0]
     lookup_path, lookup_pathext = _get_env_path_and_pathext(env)
     resolved = (
-        resolve_executable_with_pathext(prog, pathext=lookup_pathext, path=lookup_path)
-        or shutil.which(prog, path=lookup_path)
+        shutil.which(prog, path=lookup_path)
+        or resolve_executable_with_pathext(prog, pathext=lookup_pathext, path=lookup_path)
         or prog
     )
     lower = resolved.lower()
